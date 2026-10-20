@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>登录 · agent-hub</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='6' fill='%234f8cff'/><circle cx='6' cy='7' r='3' fill='%232fbf71'/><circle cx='27' cy='8' r='3' fill='%23f0b429'/><circle cx='28' cy='22' r='3' fill='%23ff5f56'/><circle cx='5' cy='23' r='3' fill='%23a78bfa'/><circle cx='16' cy='29' r='3' fill='%2322d3ee'/></svg>"/>
+    <style>
+        :root {
+            --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b;
+            --border: #2a2f3a; --text: #e6e8ec; --muted: #8b93a3;
+            --accent: #4f8cff; --ok: #2fbf71; --err: #ff5f56;
+        }
+        * { box-sizing: border-box; }
+        html, body { height: 100%; margin: 0; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg); color: var(--text);
+            display: flex; align-items: center; justify-content: center; min-height: 100vh;
+        }
+        .card {
+            width: 380px; max-width: 92vw; background: var(--panel);
+            border: 1px solid var(--border); border-radius: 18px; padding: 30px 28px 26px;
+            box-shadow: 0 24px 70px rgba(0,0,0,.45);
+        }
+        .brand { display: flex; align-items: center; gap: 10px; justify-content: center; margin-bottom: 6px; }
+        .brand svg { width: 30px; height: 30px; }
+        .brand .name { font-size: 19px; font-weight: 800; letter-spacing: .3px; }
+        .subtitle { text-align: center; color: var(--muted); font-size: 13px; margin: 2px 0 22px; }
+
+        .tabs { display: flex; background: var(--panel-2); border: 1px solid var(--border); border-radius: 11px; padding: 4px; margin-bottom: 20px; }
+        .tab { flex: 1; text-align: center; padding: 9px 0; font-size: 13.5px; border-radius: 8px; cursor: pointer; color: var(--muted); }
+        .tab.active { background: var(--accent); color: #fff; font-weight: 600; }
+
+        .pane { display: none; }
+        .pane.active { display: block; }
+
+        label { font-size: 12.5px; color: var(--muted); display: block; margin: 0 0 7px 2px; }
+        .field { display: flex; gap: 8px; margin-bottom: 14px; }
+        input {
+            flex: 1; width: 100%; background: var(--panel-2); border: 1px solid var(--border);
+            color: var(--text); border-radius: 10px; padding: 11px 13px; font-size: 14px; outline: none;
+        }
+        input:focus { border-color: var(--accent); }
+        .code-btn {
+            flex: 0 0 auto; white-space: nowrap; background: var(--panel-2); border: 1px solid var(--border);
+            color: var(--text); border-radius: 10px; padding: 0 14px; font-size: 13px; cursor: pointer;
+        }
+        .code-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+        .code-btn:disabled { opacity: .5; cursor: not-allowed; }
+
+        .primary {
+            width: 100%; background: var(--accent); color: #fff; border: none; border-radius: 11px;
+            padding: 12px; font-size: 14.5px; font-weight: 600; cursor: pointer; margin-top: 4px;
+        }
+        .primary:hover:not(:disabled) { filter: brightness(1.08); }
+        .primary:disabled { opacity: .5; cursor: not-allowed; }
+        .hint { font-size: 12px; color: var(--muted); margin: 12px 2px 0; line-height: 1.6; }
+        .hint.demo { color: var(--accent); }
+        .err { font-size: 12.5px; color: var(--err); margin: 10px 2px 0; min-height: 16px; }
+
+        .wx { text-align: center; }
+        #qr { width: 200px; height: 200px; background: #fff; border-radius: 12px; margin: 4px auto 12px; display: block; }
+        .wx-status { font-size: 13px; color: var(--muted); margin-bottom: 14px; min-height: 18px; }
+        .wx-status.ok { color: var(--ok); }
+        .wx-tip { font-size: 12px; color: var(--muted); margin-top: 10px; }
+        .ghost {
+            width: 100%; background: var(--panel-2); color: var(--text); border: 1px solid var(--border);
+            border-radius: 11px; padding: 11px; font-size: 13.5px; cursor: pointer;
+        }
+        .ghost:hover { border-color: var(--accent); color: var(--accent); }
+    </style>
+</head>
+<body>
+<div class="card">
+    <div class="brand" title="agent-hub：链接任意领域的智能体中枢">
+        <svg viewBox="0 0 32 32" aria-hidden="true">
+            <defs><radialGradient id="hubG2" cx="50%" cy="38%" r="62%">
+                <stop offset="0%" stop-color="#8fb6ff"/><stop offset="100%" stop-color="#3b6fd4"/>
+            </radialGradient></defs>
+            <g stroke="#3a4252" stroke-width="1.4">
+                <line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="27" y2="8"/>
+                <line x1="16" y1="16" x2="28" y2="22"/><line x1="16" y1="16" x2="16" y2="29"/>
+                <line x1="16" y1="16" x2="5" y2="23"/><line x1="16" y1="16" x2="9" y2="28"/>
+            </g>
+            <circle cx="6" cy="7" r="3" fill="#4f8cff"/><circle cx="27" cy="8" r="3" fill="#2fbf71"/>
+            <circle cx="28" cy="22" r="3" fill="#f0b429"/><circle cx="16" cy="29" r="3" fill="#ff5f56"/>
+            <circle cx="5" cy="23" r="3" fill="#a78bfa"/><circle cx="9" cy="28" r="3" fill="#22d3ee"/>
+            <circle cx="16" cy="16" r="6.2" fill="url(#hubG2)"/>
+            <circle cx="16" cy="16" r="6.2" fill="none" stroke="#cfe0ff" stroke-width="1" opacity=".6"/>
+        </svg>
+        <span class="name">agent-hub</span>
+    </div>
+    <div class="subtitle">登录后连接任意领域的智能体</div>
+
+    <div class="tabs">
+        <div class="tab active" data-tab="phone">手机号登录</div>
+        <div class="tab" data-tab="wechat">微信扫码登录</div>
+    </div>
+
+    <!-- 手机号 -->
+    <div class="pane active" id="pane-phone">
+        <label>手机号</label>
+        <div class="field">
+            <input id="phone" type="tel" inputmode="numeric" maxlength="11" placeholder="请输入手机号"/>
+        </div>
+        <label>验证码</label>
+        <div class="field">
+            <input id="code" type="text" inputmode="numeric" maxlength="6" placeholder="6 位验证码"/>
+            <button class="code-btn" id="sendCode">获取验证码</button>
+        </div>
+        <button class="primary" id="phoneLogin">登录</button>
+        <div class="hint demo" id="codeHint"></div>
+        <div class="err" id="phoneErr"></div>
+    </div>
+
+    <!-- 微信 -->
+    <div class="pane" id="pane-wechat">
+        <div class="wx">
+            <canvas id="qr" width="200" height="200"></canvas>
+            <div class="wx-status" id="wxStatus">请使用微信扫描二维码</div>
+            <button class="ghost" id="simScan">模拟微信扫码</button>
+            <div class="wx-tip">演示环境：点击「模拟微信扫码」即可完成登录（真实环境由微信 App 扫码回调）。</div>
+        </div>
+    </div>
+</div>
+
+<script>
+const $ = id => document.getElementById(id);
+const BASE = location.origin;
+
+function saveAndGo(token) {
+    localStorage.setItem('ah_token', token);
+    // 服务端 WebFilter 对页面跳转只认 Cookie（页面导航不带 Authorization 头），
+    // 因此登录成功后必须把 token 写入 ah_token Cookie，否则 /chat.html 会被拦截回登录页。
+    document.cookie = 'ah_token=' + token + '; path=/; max-age=' + (7 * 24 * 3600) + '; SameSite=Lax';
+    location.href = '/chat.html';
+}
+async function api(path, opts) {
+    const resp = await fetch(BASE + path, Object.assign({ headers: { 'Content-Type': 'application/json' } }, opts || {}));
+    const data = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(data.error || ('HTTP ' + resp.status));
+    return data;
+}
+
+// ===== Tab 切换 =====
+document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => switchTab(t.dataset.tab)));
+let currentTab = 'phone';
+function switchTab(name) {
+    currentTab = name;
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.tab === name));
+    document.querySelectorAll('.pane').forEach(p => p.classList.toggle('active', p.id === 'pane-' + name));
+    if (name === 'wechat') startWechat(); else stopWechat();
+}
+
+// ===== 手机号 =====
+let sending = false, cooldown = 0;
+$('sendCode').addEventListener('click', async () => {
+    if (sending) return;
+    const phone = $('phone').value.trim();
+    if (!/^1[3-9]\d{9}$/.test(phone)) { $('phoneErr').textContent = '请输入正确的手机号'; return; }
+    $('phoneErr').textContent = '';
+    sending = true; $('sendCode').disabled = true;
+    try {
+        const r = await api('/api/auth/sms/send', { method: 'POST', body: JSON.stringify({ phone }) });
+        $('codeHint').textContent = '演示验证码：' + r.code + '（真实环境由短信下发，5 分钟内有效）';
+        cooldown = 60; tick();
+    } catch (e) { $('phoneErr').textContent = e.message; }
+    finally { sending = false; }
+});
+function tick() {
+    if (cooldown <= 0) { $('sendCode').disabled = false; $('sendCode').textContent = '获取验证码'; return; }
+    $('sendCode').textContent = cooldown + 's';
+    cooldown--; setTimeout(tick, 1000);
+}
+$('phoneLogin').addEventListener('click', async () => {
+    const phone = $('phone').value.trim(), code = $('code').value.trim();
+    $('phoneErr').textContent = '';
+    if (!/^1[3-9]\d{9}$/.test(phone)) { $('phoneErr').textContent = '请输入正确的手机号'; return; }
+    if (!code) { $('phoneErr').textContent = '请输入验证码'; return; }
+    try {
+        const r = await api('/api/auth/sms/verify', { method: 'POST', body: JSON.stringify({ phone, code }) });
+        saveAndGo(r.token);
+    } catch (e) { $('phoneErr').textContent = e.message; }
+});
+
+// ===== 微信扫码（模拟） =====
+let ticket = null, pollTimer = null, scanned = false;
+function drawFakeQR(canvas, text) {
+    const N = 25, ctx = canvas.getContext('2d'), size = canvas.width, cell = size / N;
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, size, size);
+    let seed = 0; for (const ch of text) seed = (seed * 31 + ch.charCodeAt(0)) >>> 0;
+    function rnd() { seed = (seed * 1103515245 + 12345) & 0x7fffffff; return seed / 0x7fffffff; }
+    function finder(ox, oy) {
+        ctx.fillStyle = '#000'; ctx.fillRect(ox * cell, oy * cell, 7 * cell, 7 * cell);
+        ctx.fillStyle = '#fff'; ctx.fillRect((ox + 1) * cell, (oy + 1) * cell, 5 * cell, 5 * cell);
+        ctx.fillStyle = '#000'; ctx.fillRect((ox + 2) * cell, (oy + 2) * cell, 3 * cell, 3 * cell);
+    }
+    for (let y = 0; y < N; y++) for (let x = 0; x < N; x++) {
+        const inFinder = (x < 8 && y < 8) || (x > N - 9 && y < 8) || (x < 8 && y > N - 9);
+        if (inFinder) continue;
+        if (rnd() > 0.5) { ctx.fillStyle = '#000'; ctx.fillRect(x * cell, y * cell, cell, cell); }
+    }
+    finder(0, 0); finder(N - 7, 0); finder(0, N - 7);
+}
+async function startWechat() {
+    try {
+        const r = await api('/api/auth/wechat/ticket', { method: 'POST' });
+        ticket = r.ticket; scanned = false;
+        drawFakeQR($('qr'), location.origin + '/wx?t=' + ticket);
+        $('wxStatus').className = 'wx-status'; $('wxStatus').textContent = '请使用微信扫描二维码';
+        pollTimer = setInterval(poll, 1500);
+    } catch (e) { $('wxStatus').textContent = '生成二维码失败：' + e.message; }
+}
+function stopWechat() { if (pollTimer) { clearInterval(pollTimer); pollTimer = null; } ticket = null; }
+async function poll() {
+    if (!ticket) return;
+    try {
+        const s = await api('/api/auth/wechat/status?ticket=' + encodeURIComponent(ticket));
+        if (s.status === 'CONFIRMED' && s.token) { stopWechat(); saveAndGo(s.token); }
+        else if (s.status === 'EXPIRED') { $('wxStatus').textContent = '二维码已过期，请切换标签刷新'; stopWechat(); }
+    } catch (_) {}
+}
+$('simScan').addEventListener('click', async () => {
+    if (!ticket) { $('wxStatus').textContent = '请先生成二维码'; return; }
+    if (scanned) return; scanned = true;
+    $('wxStatus').className = 'wx-status ok'; $('wxStatus').textContent = '扫码成功，正在登录…';
+    try {
+        const r = await api('/api/auth/wechat/confirm?ticket=' + encodeURIComponent(ticket), { method: 'POST' });
+        stopWechat(); saveAndGo(r.token);
+    } catch (e) { $('wxStatus').textContent = '确认失败：' + e.message; scanned = false; }
+});
+</script>
+</body>
+</html>

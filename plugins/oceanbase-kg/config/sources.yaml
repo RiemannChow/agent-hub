@@ -1,0 +1,35 @@
+# 爬虫种子配置
+docs:
+  # OceanBase 官方文档（社区版 / 企业版）
+  seeds:
+    - https://www.oceanbase.com/docs/oceanbase-database-cn
+    - https://www.oceanbase.com/docs/observer-enterprise-cn
+    - https://www.oceanbase.com/docs/ocp-10000000000000000
+  max_depth: 3
+  delay: 1.0            # 每次请求之间的礼貌延迟（秒）
+  max_pages: 400        # 单路最多抓取页面数
+
+community:
+  seeds:
+    - https://www.oceanbase.com/community
+    - https://ask.oceanbase.com/
+    - https://www.oceanbase.com/blog
+  max_depth: 2
+  delay: 1.0
+  max_pages: 200
+
+github:
+  repo: oceanbase/oceanbase
+  # 克隆到本地的临时目录（用完可删）
+  clone_dir: .cache/oceanbase_repo
+  # 控制扫描范围，避免一次性拉取整个超大仓库
+  max_files: 1500
+  # 只扫描这些顶层目录（留空 = 全仓库，但受 max_files 限制）
+  include_dirs:
+    - src
+    - unittest
+  skip_dirs:
+    - deps
+    - third_party
+    - build
+  skip_large_files_kb: 512   # 超过此大小(KB)的文件跳过

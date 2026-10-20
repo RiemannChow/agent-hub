@@ -1,0 +1,127 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1040 1230" font-family="-apple-system, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif">
+  <defs>
+    <marker id="arrow" markerWidth="11" markerHeight="11" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#8b94a3"/>
+    </marker>
+    <marker id="arrowG" markerWidth="11" markerHeight="11" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#2fbf71"/>
+    </marker>
+    <marker id="arrowA" markerWidth="11" markerHeight="11" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+      <path d="M0,0 L8,3 L0,6 Z" fill="#f0b429"/>
+    </marker>
+  </defs>
+
+  <rect x="0" y="0" width="1040" height="1230" fill="#0f141b"/>
+
+  <text x="520" y="34" text-anchor="middle" fill="#e6e9ef" font-size="22" font-weight="700">混合检索架构 · HybridSearchService#hybridSearch</text>
+  <text x="520" y="58" text-anchor="middle" fill="#8b94a3" font-size="13">一次调用融合「向量 + 全文 + 标量」三路 → 粗排双支路候选 + RRF 精排结果</text>
+
+  <!-- ============ Entry ============ -->
+  <rect x="300" y="80" width="440" height="58" rx="10" fill="#1f2733" stroke="#3a4252" stroke-width="1.5"/>
+  <text x="520" y="104" text-anchor="middle" fill="#e6e9ef" font-size="14" font-weight="600">AgentToolkit.seek_book_search</text>
+  <text x="520" y="123" text-anchor="middle" fill="#aeb6c2" font-size="11">→ HybridSearchService#hybridSearch(queryText, keyword, where, n)</text>
+
+  <!-- ============ Three input signals ============ -->
+  <rect x="50" y="170" width="280" height="56" rx="9" fill="#16233b" stroke="#4f8cff" stroke-width="1.5"/>
+  <text x="190" y="193" text-anchor="middle" fill="#cfe0ff" font-size="13" font-weight="600">① 语义查询  queryText</text>
+  <text x="190" y="212" text-anchor="middle" fill="#8b94a3" font-size="10.5">向量支路的输入</text>
+
+  <rect x="380" y="170" width="280" height="56" rx="9" fill="#241a3a" stroke="#a78bfa" stroke-width="1.5"/>
+  <text x="520" y="193" text-anchor="middle" fill="#e6d8ff" font-size="13" font-weight="600">② 关键词  keyword</text>
+  <text x="520" y="212" text-anchor="middle" fill="#8b94a3" font-size="10.5">全文支路的输入</text>
+
+  <rect x="710" y="170" width="280" height="56" rx="9" fill="#14352a" stroke="#2fbf71" stroke-width="1.5"/>
+  <text x="850" y="193" text-anchor="middle" fill="#bdf0d4" font-size="13" font-weight="600">③ 标量过滤  where</text>
+  <text x="850" y="212" text-anchor="middle" fill="#8b94a3" font-size="10.5">两支路共享，SQL 层应用</text>
+
+  <path d="M520,138 L190,170" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M520,138 L520,170" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M520,138 L850,170" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ============ 粗排 container ============ -->
+  <rect x="40" y="248" width="960" height="244" rx="14" fill="none" stroke="#465062" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="58" y="272" fill="#c4ccd6" font-size="13" font-weight="600">粗排 Coarse Ranking — 两支路独立召回（候选已在 SQL 内被标量条件过滤）</text>
+
+  <rect x="70" y="300" width="420" height="166" rx="10" fill="#16233b" stroke="#4f8cff" stroke-width="1.6"/>
+  <text x="280" y="326" text-anchor="middle" fill="#cfe0ff" font-size="13.5" font-weight="700">向量近邻支路  vectorHits()</text>
+  <text x="280" y="352" text-anchor="middle" fill="#aeb6c2" font-size="11">SQL: l2_distance(embedding, ?) AS distance</text>
+  <text x="280" y="374" text-anchor="middle" fill="#aeb6c2" font-size="11">+ WHERE (genre / price / rating / year / reviews)</text>
+  <text x="280" y="396" text-anchor="middle" fill="#aeb6c2" font-size="11">ORDER BY distance ASC</text>
+  <text x="280" y="424" text-anchor="middle" fill="#8b94a3" font-size="11">→ List&lt;BookHit&gt; · vectorScore = L2 距离（升序）</text>
+
+  <rect x="550" y="300" width="420" height="166" rx="10" fill="#241a3a" stroke="#a78bfa" stroke-width="1.6"/>
+  <text x="760" y="326" text-anchor="middle" fill="#e6d8ff" font-size="13.5" font-weight="700">全文倒排支路  fulltextHits()</text>
+  <text x="760" y="352" text-anchor="middle" fill="#aeb6c2" font-size="11">SQL: MATCH(document) AGAINST (? IN BOOLEAN MODE)</text>
+  <text x="760" y="374" text-anchor="middle" fill="#aeb6c2" font-size="11">+ WHERE (genre / price / rating / year / reviews)</text>
+  <text x="760" y="396" text-anchor="middle" fill="#aeb6c2" font-size="11">ORDER BY relevance DESC</text>
+  <text x="760" y="424" text-anchor="middle" fill="#8b94a3" font-size="11">→ List&lt;BookHit&gt; · fulltextScore = 相关性（降序）</text>
+
+  <path d="M190,226 L280,300" stroke="#4f8cff" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M520,226 L760,300" stroke="#a78bfa" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M850,226 L430,300" stroke="#2fbf71" stroke-width="1.6" fill="none" marker-end="url(#arrowG)"/>
+  <path d="M850,226 L760,300" stroke="#2fbf71" stroke-width="1.6" fill="none" marker-end="url(#arrowG)"/>
+
+  <text x="520" y="514" text-anchor="middle" fill="#7c8696" font-size="11">（仅标量场景：跳过双支路，filterSearch → scalarHits → 直送精排，scalarOnly=true）</text>
+
+  <!-- ============ 去重聚合 ============ -->
+  <rect x="300" y="534" width="440" height="82" rx="10" fill="#2a2f3a" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="520" y="560" text-anchor="middle" fill="#e6e9ef" font-size="13.5" font-weight="600">跨支路按书名去重（Agg）</text>
+  <text x="520" y="581" text-anchor="middle" fill="#aeb6c2" font-size="11">同书多年份副本 → 留「评分最高 / 年份最新」一版</text>
+  <text x="520" y="601" text-anchor="middle" fill="#aeb6c2" font-size="11">聚合 向量距离 + 全文相关性最大值 + 来源标记(V/F)</text>
+
+  <path d="M280,466 L450,534" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M760,466 L590,534" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ============ 精排 container ============ -->
+  <rect x="40" y="640" width="960" height="384" rx="14" fill="none" stroke="#465062" stroke-width="1.5" stroke-dasharray="6 5"/>
+  <text x="58" y="664" fill="#c4ccd6" font-size="13" font-weight="600">精排 Fine Ranking — RRF 倒数排名融合（k = 60）</text>
+
+  <rect x="70" y="692" width="400" height="140" rx="10" fill="#16233b" stroke="#4f8cff" stroke-width="1.4"/>
+  <text x="270" y="720" text-anchor="middle" fill="#cfe0ff" font-size="13" font-weight="700">rankByBranch(向量)</text>
+  <text x="270" y="744" text-anchor="middle" fill="#aeb6c2" font-size="11">按 L2 距离 升序 排名 → rank_v</text>
+  <text x="270" y="766" text-anchor="middle" fill="#8b94a3" font-size="10.5">（无向量分数的书不参与排名）</text>
+
+  <rect x="570" y="692" width="400" height="140" rx="10" fill="#241a3a" stroke="#a78bfa" stroke-width="1.4"/>
+  <text x="770" y="720" text-anchor="middle" fill="#e6d8ff" font-size="13" font-weight="700">rankByBranch(全文)</text>
+  <text x="770" y="744" text-anchor="middle" fill="#aeb6c2" font-size="11">按相关性 降序 排名 → rank_f</text>
+  <text x="770" y="766" text-anchor="middle" fill="#8b94a3" font-size="10.5">（无全文分数的书不参与排名）</text>
+
+  <rect x="270" y="872" width="500" height="128" rx="10" fill="#3a2f12" stroke="#f0b429" stroke-width="1.8"/>
+  <text x="520" y="902" text-anchor="middle" fill="#ffe6ab" font-size="14" font-weight="700">RRF 融合</text>
+  <text x="520" y="928" text-anchor="middle" fill="#e6e9ef" font-size="11.5">fusedScore = Σ 1/(k + rank + 1)</text>
+  <text x="520" y="950" text-anchor="middle" fill="#e6e9ef" font-size="11.5">按 fusedScore 降序取 TopN</text>
+  <text x="520" y="972" text-anchor="middle" fill="#8b94a3" font-size="10.5">→ FusedBook(rank, ∑, 来自 V/F)</text>
+
+  <!-- dedup -> rank boxes (down) -->
+  <path d="M520,616 L270,692" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <path d="M520,616 L770,692" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+  <!-- rank boxes -> fusion (down, converging) -->
+  <path d="M270,832 L390,872" stroke="#f0b429" stroke-width="1.6" fill="none" marker-end="url(#arrowA)"/>
+  <path d="M770,832 L650,872" stroke="#f0b429" stroke-width="1.6" fill="none" marker-end="url(#arrowA)"/>
+
+  <!-- ============ Output ============ -->
+  <rect x="300" y="1044" width="440" height="64" rx="10" fill="#2a2f3a" stroke="#6b7280" stroke-width="1.5"/>
+  <text x="520" y="1070" text-anchor="middle" fill="#e6e9ef" font-size="13.5" font-weight="600">BookHybridResult</text>
+  <text x="520" y="1090" text-anchor="middle" fill="#aeb6c2" font-size="10.5">(input, vectorCandidates, fulltextCandidates, fused, scalarOnly)</text>
+
+  <path d="M520,1000 L520,1044" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ============ A2UI ============ -->
+  <rect x="180" y="1124" width="680" height="66" rx="10" fill="#1f2733" stroke="#3a4252" stroke-width="1.5"/>
+  <text x="520" y="1149" text-anchor="middle" fill="#e6e9ef" font-size="13" font-weight="600">AgentToolkit → A2UI  type:hybrid 卡片</text>
+  <text x="520" y="1169" text-anchor="middle" fill="#aeb6c2" font-size="10.5">输入摘要 + 粗排双面板（蓝=向量 / 紫=全文）+ RRF 精排列表（带 V/F 徽章）· 前端渲染</text>
+
+  <path d="M520,1108 L520,1124" stroke="#8b94a3" stroke-width="1.6" fill="none" marker-end="url(#arrow)"/>
+
+  <!-- ============ Legend ============ -->
+  <g transform="translate(40,1202)">
+    <rect x="0" y="0" width="14" height="14" rx="3" fill="#16233b" stroke="#4f8cff" stroke-width="1.4"/>
+    <text x="20" y="11" fill="#aeb6c2" font-size="11">向量支路</text>
+    <rect x="120" y="0" width="14" height="14" rx="3" fill="#241a3a" stroke="#a78bfa" stroke-width="1.4"/>
+    <text x="140" y="11" fill="#aeb6c2" font-size="11">全文支路</text>
+    <rect x="240" y="0" width="14" height="14" rx="3" fill="#14352a" stroke="#2fbf71" stroke-width="1.4"/>
+    <text x="260" y="11" fill="#aeb6c2" font-size="11">标量过滤</text>
+    <rect x="380" y="0" width="14" height="14" rx="3" fill="#3a2f12" stroke="#f0b429" stroke-width="1.4"/>
+    <text x="400" y="11" fill="#aeb6c2" font-size="11">RRF 融合 / 输出</text>
+  </g>
+</svg>

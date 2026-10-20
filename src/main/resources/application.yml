@@ -1,0 +1,95 @@
+spring:
+  application:
+    name: agent-hub
+  profiles:
+    active: seekdb
+
+# ============ SeekDB / OceanBase（兼容 MySQL 协议） ============
+---
+spring:
+  config:
+    activate:
+      on-profile: seekdb
+  autoconfigure:
+    exclude:
+      # 仅排除同步 Mongo 自动配置；响应式 Mongo 用于存放登录/用户数据
+      - org.springframework.boot.autoconfigure.mongo.MongoAutoConfiguration
+  data:
+    mongodb:
+      uri: mongodb://127.0.0.1:27017/agent_hub
+      auto-index-creation: false   # 不在启动时强制连库建索引，避免无 Mongo 时启动失败
+  datasource:
+    url: jdbc:oceanbase://127.0.0.1:2881/demo
+    username: root
+    password: ${SEEKDB_PASSWORD:}   # 默认空密码；生产环境通过环境变量注入
+    driver-class-name: com.oceanbase.jdbc.Driver
+    hikari:
+      initialization-fail-timeout: 0   # 连不上库也不中断启动；首次真正使用 DataSource 时才失败
+  jdbc:
+    template:
+      fetch-size: 100
+  sql:
+    init:
+      mode: never                       # 不在启动时跑 schema.sql，避免初始化器强依赖一个活的 DataSource
+
+# ============ MongoDB（备选 Repository 实现） ============
+# 切换到 mongo 时排除 JDBC 自动配置，避免缺少 DataSource 导致启动失败。
+---
+spring:
+  config:
+    activate:
+      on-profile: mongo
+  autoconfigure:
+    exclude: org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+  data:
+    mongodb:
+      uri: mongodb://127.0.0.1:27017/demo
+
+---
+# ============ Agent Persona（切换行业只需改这里） ============
+# 该文档不带 on-profile，对所有 profile 均生效（seekdb / mongo 都能读到 agent.*）
+agent:
+  persona:
+    role-name: "电商数据分析助手"
+    domain-description: "你服务于电商行业，擅长对用户行为、GMV、转化率进行问数分析，数据存储在 SeekDB 中。"
+    output-format: "以 Markdown 表格返回指标，并附一句话结论。"
+  # ============ 模型配置（腾讯混元 Hunyuan，经 LKEAP 的 Anthropic 兼容网关） ============
+  # 网关即 Anthropic Messages 协议：ANTHROPIC_BASE_URL + ANTHROPIC_AUTH_TOKEN
+  # 安全：api-key 一律从环境变量注入，仓库内不保留任何明文密钥；
+  #       生产部署请务必设置 AGENT_MODEL_API_KEY，否则模型调用会鉴权失败。
+  model:
+    provider: hy4
+    api-key: ${AGENT_MODEL_API_KEY:}
+    base-url: ${AGENT_MODEL_BASE_URL:https://api.lkeap.cloud.tencent.com/plan/anthropic}
+    name: ${AGENT_MODEL_NAME:hy4-preview}
+  # ============ 图书混合检索（Java 版） ============
+  books:
+    # 数据集文件名（sql/ 目录或 classpath 均可），对应 Kaggle: Amazon Top 50 Bestselling Books 2009-2019
+    csv-path: sql/bestsellers_with_categories.csv
+
+# ============ OceanBase 知识图谱问答（Neo4j 后端） ============
+---
+spring:
+  config:
+    activate:
+      on-profile: oceanbase
+  # oceanbase profile 下不需要 SeekDB 的 JDBC/Mongo 数据源，排除避免无配置启动失败
+  autoconfigure:
+    exclude:
+      - org.springframework.boot.autoconfigure.jdbc.DataSourceAutoConfiguration
+  data:
+    mongodb:
+      # oceanbase profile 复用 MongoDB 承载登录态/会话票据（AuthService 依赖），
+      # 不依赖 SeekDB；Neo4j 仅用于知识图谱检索。
+      uri: mongodb://127.0.0.1:27017/agent_hub
+  neo4j:
+    uri: ${NEO4J_URI:bolt://localhost:7687}
+    user: ${NEO4J_USER:neo4j}
+    password: ${NEO4J_PASSWORD:oceanbase123}   # 默认本地演示密码；生产请通过环境变量覆盖
+
+# OceanBase 专属人格（覆盖全局 agent.persona.*）
+agent:
+  persona:
+    role-name: "OceanBase 技术助手"
+    domain-description: "你精通 OceanBase 分布式数据库（部署拓扑、租户/资源池、SQL、运维与排障），知识来源于 Neo4j 知识图谱（官方文档 + 主仓库代码 + 社区文档）。回答前优先调用 ob_* 工具检索图谱，再综合作答。"
+    output-format: "先给结论，再给依据（引用图谱中的实体/关系），必要时附 Cypher 或命令示例。"

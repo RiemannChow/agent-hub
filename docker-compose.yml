@@ -1,0 +1,85 @@
+# agent-hub 全套依赖组件（默认 seekdb 配置需要 OceanBase + MongoDB；oceanbase 配置需要 Neo4j + MongoDB）
+# 应用 JDBC: jdbc:oceanbase://127.0.0.1:2881/demo  (root / 空密码)
+# 应用 Mongo: mongodb://127.0.0.1:27017/agent_hub  (无鉴权)
+# 应用 Neo4j: bolt://localhost:7687  (neo4j / oceanbase123)
+#
+# 说明：oceanbase/seekdb 镜像自带 ENTRYPOINT=/root/start.sh，已支持通过环境变量调参并自动执行
+#       INIT_SCRIPTS_PATH 下的 *.sql 初始化脚本，因此这里直接用镜像默认 entrypoint，不覆盖启动脚本。
+
+services:
+  # ============ OceanBase / SeekDB（兼容 MySQL 协议，端口 2881） ============
+  seekdb:
+    image: oceanbase/seekdb:1.4.0-100000172026082615
+    container_name: agent-hub-seekdb
+    ports:
+      - "2881:2881"
+    environment:
+      # 调小资源占用，适配本地 Docker 内存上限（默认 5.8GiB）
+      MEMORY_LIMIT: "4G"
+      DATAFILE_SIZE: "5G"
+      DATAFILE_MAXSIZE: "10G"
+      LOG_DISK_SIZE: "6G"
+      CPU_COUNT: "4"
+      # root 保持空密码，与应用 datasource 配置一致（password: ""）
+      ROOT_PASSWORD: ""
+      # 首次启动自动建库并执行初始化 SQL
+      SEEKDB_DATABASE: "demo"
+      INIT_SCRIPTS_PATH: "/init"
+    volumes:
+      - seekdb_data:/var/lib/seekdb
+      - ./plugins/seekdb-init:/init:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h127.0.0.1 -P2881 -uroot -e 'SELECT 1' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+      start_period: 120s
+
+  # ============ MongoDB（承载登录态 / 会话票据，端口 27017） ============
+  mongodb:
+    image: mongo:7
+    container_name: agent-hub-mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - mongo_data:/data/db
+    healthcheck:
+      test: ["CMD-SHELL", "mongosh --quiet --eval 'db.adminCommand(\"ping\")' >/dev/null 2>&1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  # ============ Neo4j（OceanBase 知识图谱后端，端口 7474/7687） ============
+  neo4j:
+    image: neo4j:5.23-community
+    container_name: agent-hub-neo4j
+    ports:
+      - "7474:7474"   # HTTP Browser
+      - "7687:7687"   # Bolt
+    environment:
+      NEO4J_AUTH: neo4j/oceanbase123
+      # 允许较短密码，便于本地演示
+      NEO4J_dbms_security_auth__minimum__password__length: "4"
+      NEO4J_PLUGINS: '["apoc"]'
+      # 限制堆内存，避免与 OceanBase 争夺 Docker 内存额度
+      NEO4J_server_memory_heap_initial__size: "256m"
+      NEO4J_server_memory_heap_max__size: "512m"
+      NEO4J_server_memory_pagecache_size: "512m"
+    volumes:
+      - neo4j_data:/data
+      - neo4j_logs:/logs
+      - neo4j_import:/var/lib/neo4j/import
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:7474 || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+volumes:
+  seekdb_data:
+  mongo_data:
+  neo4j_data:
+  neo4j_logs:
+  neo4j_import:

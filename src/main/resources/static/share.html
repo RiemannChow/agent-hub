@@ -1,0 +1,470 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8"/>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+    <title>agent-hub · 分享</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='6' fill='%234f8cff'/><circle cx='6' cy='7' r='3' fill='%232fbf71'/><circle cx='27' cy='8' r='3' fill='%23f0b429'/><circle cx='28' cy='22' r='3' fill='%23ff5f56'/><circle cx='5' cy='23' r='3' fill='%23a78bfa'/><circle cx='16' cy='29' r='3' fill='%2322d3ee'/></svg>"/>
+    <style>
+        :root {
+            --bg: #0f1115; --panel: #171a21; --panel-2: #1e222b;
+            --border: #2a2f3a; --text: #e6e8ec; --muted: #8b93a3;
+            --accent: #4f8cff; --tool: #f0b429; --user: #2b6cb0; --ok: #2fbf71;
+        }
+        * { box-sizing: border-box; }
+        html, body { margin: 0; min-height: 100%; }
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Roboto, Helvetica, Arial, sans-serif;
+            background: var(--bg); color: var(--text);
+        }
+        header {
+            position: sticky; top: 0; z-index: 10;
+            display: flex; align-items: center; gap: 10px;
+            padding: 12px 20px; background: var(--panel); border-bottom: 1px solid var(--border);
+        }
+        .brand { display: flex; align-items: center; gap: 9px; }
+        .brand svg { flex: 0 0 26px; }
+        .brand .name { font-size: 15px; font-weight: 700; }
+        .tag { font-size: 11px; color: var(--muted); border: 1px solid var(--border); border-radius: 999px; padding: 2px 9px; margin-left: 4px; }
+        .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+        #copyBtn, #backBtn {
+            background: var(--panel-2); border: 1px solid var(--border); color: var(--text);
+            border-radius: 9px; padding: 7px 13px; font-size: 13px; cursor: pointer;
+        }
+        #copyBtn:hover, #backBtn:hover { border-color: var(--accent); color: var(--accent); }
+        #wrap { max-width: 820px; margin: 0 auto; padding: 24px 16px 60px; }
+        .meta { color: var(--muted); font-size: 13px; margin-bottom: 18px; }
+        .meta b { color: var(--text); }
+        .msg { display: flex; flex-direction: column; margin-bottom: 16px; }
+        .msg.user { align-items: flex-end; }
+        .msg.agent { align-items: flex-start; }
+        .role { font-size: 11px; color: var(--muted); margin: 0 4px 4px; }
+        .bubble {
+            max-width: 86%; padding: 11px 15px; border-radius: 14px; line-height: 1.6;
+            white-space: pre-wrap; word-break: break-word; font-size: 14.5px;
+        }
+        .msg.user .bubble { background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
+        .msg.agent .bubble { background: var(--panel-2); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+        .toolcard {
+            align-self: flex-start; width: 92%;
+            background: var(--panel); border: 1px solid var(--border);
+            border-left: 3px solid var(--tool); border-radius: 10px; padding: 10px 13px; font-size: 13px; margin-bottom: 16px;
+        }
+        .toolcard.result { border-left-color: var(--ok); }
+        .toolcard .t-head { font-weight: 600; margin-bottom: 6px; }
+        .toolcard .t-body { color: var(--muted); white-space: pre-wrap; word-break: break-word; }
+        .toolcard.result .t-head { color: var(--ok); }
+        .toolcard:not(.result) .t-head { color: var(--tool); }
+        .empty { color: var(--muted); text-align: center; margin-top: 60px; }
+        pre { white-space: pre-wrap; word-break: break-word; margin: 0; }
+        .toast {
+            position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%);
+            background: var(--ok); color: #06210f; padding: 9px 16px; border-radius: 10px;
+            font-size: 13px; opacity: 0; transition: opacity .2s; pointer-events: none;
+        }
+        .toast.show { opacity: 1; }
+
+        /* ===== A2UI：结构化结果卡片（表格 / 图表），与 chat.html 保持一致 ===== */
+        .uiblock {
+            margin: 0 0 16px; background: var(--panel); border: 1px solid var(--border);
+            border-radius: 12px; overflow: hidden;
+        }
+        .uiblock .ub-head {
+            padding: 10px 14px; font-size: 13.5px; font-weight: 600; color: var(--text);
+            background: linear-gradient(90deg, rgba(79,140,255,.16), rgba(167,139,250,.10));
+            border-bottom: 1px solid var(--border);
+            display: flex; align-items: center; gap: 8px;
+        }
+        .uiblock .ub-head .ub-ico { color: var(--accent); }
+        .uiblock .ub-scroll { overflow-x: auto; }
+        .uiblock table { border-collapse: collapse; width: 100%; font-size: 13px; }
+        .uiblock th, .uiblock td {
+            padding: 9px 13px; text-align: left; border-bottom: 1px solid var(--border); white-space: nowrap;
+        }
+        .uiblock thead th {
+            position: sticky; top: 0; background: var(--panel-2); color: var(--muted);
+            font-weight: 600; font-size: 12.5px; letter-spacing: .3px;
+        }
+        .uiblock tbody tr:nth-child(even) { background: rgba(255,255,255,.02); }
+        .uiblock tbody tr:hover { background: rgba(79,140,255,.07); }
+        .uiblock td.col-rating { color: var(--tool); font-weight: 600; }
+        .uiblock td.col-reviews { color: var(--muted); }
+        .uiblock td.col-price { color: var(--ok); font-weight: 600; }
+
+        /* 图表卡片 */
+        .uiblock .ub-chart { padding: 14px 14px 10px; }
+        .uiblock .ub-chart .ub-note { font-size: 12px; color: var(--muted); margin: 8px 4px 0; }
+        .uiblock .bars {
+            display: flex; align-items: flex-end; gap: 6px;
+            height: 230px; padding: 6px 4px 0; overflow-x: auto;
+        }
+        .uiblock .bar-col {
+            display: flex; flex-direction: column; align-items: center; justify-content: flex-end;
+            gap: 5px; min-width: 20px; flex: 1 0 auto; height: 100%;
+        }
+        .uiblock .bar-val { font-size: 11px; color: var(--text); line-height: 1; }
+        .uiblock .bar {
+            width: 64%; min-height: 2px; border-radius: 5px 5px 0 0;
+            background: linear-gradient(180deg, #4f8cff, #a78bfa); transition: height .45s ease;
+        }
+        .uiblock .bar.peak { background: linear-gradient(180deg, #f0b429, #ff5f56); }
+        .uiblock .bar-lbl { font-size: 11px; color: var(--muted); line-height: 1.1; text-align: center; }
+        .uiblock .pie-wrap { display: flex; gap: 20px; align-items: center; padding: 4px; flex-wrap: wrap; }
+        .uiblock .pie { width: 184px; height: 184px; border-radius: 50%; flex: 0 0 184px; display: grid; place-items: center; }
+        .uiblock .pie-center {
+            width: 96px; height: 96px; border-radius: 50%; background: var(--panel);
+            display: grid; place-items: center; text-align: center;
+            font-size: 12px; color: var(--muted); padding: 6px; line-height: 1.3;
+        }
+        .uiblock .legend { display: flex; flex-direction: column; gap: 7px; font-size: 12.5px; min-width: 150px; }
+        .uiblock .legend .li { display: flex; align-items: center; gap: 8px; }
+        .uiblock .legend .swatch { width: 12px; height: 12px; border-radius: 3px; flex: 0 0 12px; }
+        .uiblock .legend .lbl { color: var(--text); }
+        .uiblock .legend .val { color: var(--muted); margin-left: auto; }
+
+        /* ===== 混合检索卡片（粗排 + 精排） ===== */
+        .ub-hybrid .hyb-sum { display: flex; flex-wrap: wrap; gap: 8px; padding: 12px 14px 0; }
+        .ub-hybrid .hyb-chip { font-size: 12px; background: rgba(255,255,255,.04); border: 1px solid rgba(255,255,255,.08);
+            border-radius: 999px; padding: 4px 10px; color: var(--muted); }
+        .ub-hybrid .hyb-chip b { color: var(--text); font-weight: 600; }
+        .ub-hybrid .hyb-chip.c-vec { border-color: rgba(79,140,255,.5); }
+        .ub-hybrid .hyb-chip.c-ft  { border-color: rgba(167,139,250,.5); }
+        .ub-hybrid .hyb-chip.c-scalar { border-color: rgba(47,191,113,.5); }
+        .ub-hybrid .hyb-coarse { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; padding: 12px 14px; }
+        .ub-hybrid .hyb-branch { background: rgba(255,255,255,.025); border: 1px solid rgba(255,255,255,.07);
+            border-radius: 10px; padding: 8px 10px; min-width: 0; }
+        .ub-hybrid .hyb-branch.vec { border-left: 3px solid #4f8cff; }
+        .ub-hybrid .hyb-branch.ft  { border-left: 3px solid #a78bfa; }
+        .ub-hybrid .hyb-bh { font-size: 12.5px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+        .ub-hybrid .hyb-bh .hyb-bico { margin-right: 4px; }
+        .ub-hybrid .hyb-cnt { color: var(--muted); font-weight: 400; }
+        .ub-hybrid .hyb-blist { display: flex; flex-direction: column; gap: 3px; }
+        .ub-hybrid .hyb-bitem { display: flex; align-items: baseline; gap: 6px; font-size: 12px;
+            padding: 3px 4px; border-radius: 6px; }
+        .ub-hybrid .hyb-bitem:hover { background: rgba(79,140,255,.08); }
+        .ub-hybrid .hyb-bitem.empty { color: var(--muted); font-style: italic; }
+        .ub-hybrid .hyb-bname { color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ub-hybrid .hyb-bmeta { color: var(--tool); margin-left: auto; flex: 0 0 auto; }
+        .ub-hybrid .hyb-bscore { color: var(--muted); flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+        .ub-hybrid .hyb-fused { padding: 4px 14px 12px; }
+        .ub-hybrid .hyb-fh { font-size: 13px; font-weight: 600; color: var(--text); margin: 6px 0 8px; }
+        .ub-hybrid .hyb-flist { display: flex; flex-direction: column; gap: 6px; }
+        .ub-hybrid .hyb-fitem { display: flex; align-items: center; gap: 8px; font-size: 13px;
+            background: rgba(255,255,255,.03); border: 1px solid rgba(255,255,255,.06); border-radius: 8px; padding: 7px 10px; }
+        .ub-hybrid .hyb-rank { font-weight: 700; color: var(--accent); width: 26px; flex: 0 0 26px; }
+        .ub-hybrid .hyb-badges { display: inline-flex; gap: 3px; }
+        .ub-hybrid .b-badge { font-size: 10px; font-weight: 700; border-radius: 4px; padding: 1px 5px; color: #fff; }
+        .ub-hybrid .b-badge.v { background: #4f8cff; }
+        .ub-hybrid .b-badge.f { background: #a78bfa; }
+        .ub-hybrid .hyb-fname { color: var(--text); font-weight: 500; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .ub-hybrid .hyb-fmeta { color: var(--muted); font-size: 12px; flex: 0 0 auto; }
+        .ub-hybrid .hyb-fscore { color: var(--ok); font-weight: 600; margin-left: auto; flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+        @media (max-width: 560px) { .ub-hybrid .hyb-coarse { grid-template-columns: 1fr; } }
+    </style>
+</head>
+<body>
+<header>
+    <div class="brand" title="agent-hub：链接任意领域的智能体中枢">
+        <svg width="26" height="26" viewBox="0 0 32 32" aria-hidden="true">
+            <defs><radialGradient id="hubG" cx="50%" cy="38%" r="62%">
+                <stop offset="0%" stop-color="#8fb6ff"/><stop offset="100%" stop-color="#3b6fd4"/>
+            </radialGradient></defs>
+            <g stroke="#3a4252" stroke-width="1.4">
+                <line x1="16" y1="16" x2="6" y2="7"/><line x1="16" y1="16" x2="27" y2="8"/>
+                <line x1="16" y1="16" x2="28" y2="22"/><line x1="16" y1="16" x2="16" y2="29"/>
+                <line x1="16" y1="16" x2="5" y2="23"/><line x1="16" y1="16" x2="9" y2="28"/>
+            </g>
+            <circle cx="6" cy="7" r="3" fill="#4f8cff"/><circle cx="27" cy="8" r="3" fill="#2fbf71"/>
+            <circle cx="28" cy="22" r="3" fill="#f0b429"/><circle cx="16" cy="29" r="3" fill="#ff5f56"/>
+            <circle cx="5" cy="23" r="3" fill="#a78bfa"/><circle cx="9" cy="28" r="3" fill="#22d3ee"/>
+            <circle cx="16" cy="16" r="6.2" fill="url(#hubG)"/>
+            <circle cx="16" cy="16" r="6.2" fill="none" stroke="#cfe0ff" stroke-width="1" opacity=".6"/>
+        </svg>
+        <span class="name">agent-hub</span><span class="tag">分享对话</span>
+    </div>
+    <div class="header-right">
+        <button id="backBtn" onclick="location.href='/chat.html'">↩ 回到 agent-hub</button>
+        <button id="copyBtn">📋 复制</button>
+    </div>
+</header>
+
+<div id="wrap">
+    <div class="meta" id="meta">加载中…</div>
+    <div id="messages"></div>
+    <div class="empty" id="empty" style="display:none">未找到该分享，或链接已失效。</div>
+</div>
+<div class="toast" id="toast">已复制</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const params = new URLSearchParams(location.search);
+const shareId = params.get('shareId');
+
+function fmtTime(ms) {
+    try { return new Date(ms).toLocaleString(); } catch (_) { return ''; }
+}
+function escapeHtml(s) {
+    return (s == null ? '' : String(s)).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+}
+function toast(msg) {
+    const t = $('toast'); t.textContent = msg; t.classList.add('show');
+    setTimeout(() => t.classList.remove('show'), 1600);
+}
+
+// ===== A2UI：识别并渲染结构化结果（表格 / 图表卡片） =====
+// 同 chat.html：工具以 String 返回 JSON，框架会再包一层 JSON 字符串（双重编码），
+// 故用 parseUi 反复 parse 直到得到真正的对象（兼容单/双/多重编码）。
+function parseUi(s) {
+    if (!s) return null;
+    let v = s;
+    for (let i = 0; i < 3; i++) {
+        if (typeof v !== 'string') break;
+        try { v = JSON.parse(v); } catch (_) { break; }
+    }
+    return (v && typeof v === 'object' && !Array.isArray(v)) ? v : null;
+}
+function isUiJson(s) {
+    const o = parseUi(s);
+    if (!o) return false;
+    if (o.type === 'table' && Array.isArray(o.columns) && Array.isArray(o.rows)) return true;
+    if (o.type === 'chart' && Array.isArray(o.labels) && Array.isArray(o.values)) return true;
+    if (o.type === 'hybrid' && o.input && o.coarse && Array.isArray(o.fused)) return true;
+    return false;
+}
+function addTableBlock(ui) {
+    const wrap = document.createElement('div'); wrap.className = 'uiblock';
+    const head = document.createElement('div'); head.className = 'ub-head';
+    head.innerHTML = '<span class="ub-ico">📚</span>' + escapeHtml(ui.title || '检索结果');
+    const scroll = document.createElement('div'); scroll.className = 'ub-scroll';
+    const table = document.createElement('table');
+    const thead = document.createElement('thead'); const htr = document.createElement('tr');
+    (ui.columns || []).forEach(c => { const th = document.createElement('th'); th.textContent = c; htr.appendChild(th); });
+    thead.appendChild(htr); table.appendChild(thead);
+    const tbody = document.createElement('tbody');
+    const cols = ui.columns || []; const n = cols.length;
+    (ui.rows || []).forEach(r => {
+        const tr = document.createElement('tr');
+        for (let i = 0; i < n; i++) {
+            const td = document.createElement('td');
+            td.textContent = (r && r[i] != null) ? String(r[i]) : '';
+            const col = cols[i];
+            if (col === '评分') td.className = 'col-rating';
+            else if (col === '评论数') td.className = 'col-reviews';
+            else if (col === '价格') td.className = 'col-price';
+            tr.appendChild(td);
+        }
+        tbody.appendChild(tr);
+    });
+    table.appendChild(tbody); scroll.appendChild(table);
+    wrap.appendChild(head); wrap.appendChild(scroll);
+    return wrap;
+}
+const CHART_PALETTE = ['#4f8cff','#a78bfa','#2fbf71','#f0b429','#ff5f56','#22d3ee',
+                       '#f78fb3','#7c8cff','#52d1a8','#e0a458','#c98bdb','#5fb3e0',
+                       '#e07a9b','#9bd35f','#d98c5f','#8c9bdb'];
+function addChartBlock(ui) {
+    const wrap = document.createElement('div'); wrap.className = 'uiblock';
+    const head = document.createElement('div'); head.className = 'ub-head';
+    head.innerHTML = '<span class="ub-ico">📊</span>' + escapeHtml(ui.title || '数据图表');
+    const chart = document.createElement('div'); chart.className = 'ub-chart';
+    const labels = ui.labels || [];
+    const values = (ui.values || []).map(v => Number(v) || 0);
+    const total = values.reduce((a, b) => a + b, 0);
+    const maxV = values.length ? Math.max(...values) : 0;
+    if (ui.kind === 'pie') {
+        const wrap2 = document.createElement('div'); wrap2.className = 'pie-wrap';
+        let acc = 0; const stops = [];
+        labels.forEach((lbl, i) => {
+            const pct = total > 0 ? (values[i] / total) * 100 : 0;
+            const color = CHART_PALETTE[i % CHART_PALETTE.length];
+            stops.push(color + ' ' + acc.toFixed(2) + '% ' + (acc + pct).toFixed(2) + '%');
+            acc += pct;
+        });
+        const pie = document.createElement('div'); pie.className = 'pie';
+        pie.style.background = 'conic-gradient(' + stops.join(',') + ')';
+        const center = document.createElement('div'); center.className = 'pie-center';
+        center.innerHTML = '共 ' + total + (ui.unit || '') + '<br>(' + labels.length + ' 组)';
+        pie.appendChild(center);
+        const legend = document.createElement('div'); legend.className = 'legend';
+        labels.forEach((lbl, i) => {
+            const color = CHART_PALETTE[i % CHART_PALETTE.length];
+            const pct = total > 0 ? ((values[i] / total) * 100).toFixed(1) : '0.0';
+            const li = document.createElement('div'); li.className = 'li';
+            li.innerHTML = '<span class="swatch" style="background:' + color + '"></span>'
+                         + '<span class="lbl">' + escapeHtml(String(lbl)) + '</span>'
+                         + '<span class="val">' + values[i] + (ui.unit || '') + ' · ' + pct + '%</span>';
+            legend.appendChild(li);
+        });
+        wrap2.appendChild(pie); wrap2.appendChild(legend);
+        chart.appendChild(wrap2);
+    } else {
+        const peakIdx = values.indexOf(maxV);
+        const bars = document.createElement('div'); bars.className = 'bars';
+        labels.forEach((lbl, i) => {
+            const col = document.createElement('div'); col.className = 'bar-col';
+            const val = document.createElement('div'); val.className = 'bar-val'; val.textContent = values[i];
+            const bar = document.createElement('div');
+            bar.className = 'bar' + (i === peakIdx ? ' peak' : '');
+            bar.style.height = (maxV > 0 ? (values[i] / maxV) * 100 : 0) + '%';
+            const lab = document.createElement('div'); lab.className = 'bar-lbl'; lab.textContent = lbl;
+            col.appendChild(val); col.appendChild(bar); col.appendChild(lab);
+            bars.appendChild(col);
+        });
+        chart.appendChild(bars);
+    }
+    if (ui.note) {
+        const note = document.createElement('div'); note.className = 'ub-note';
+        note.textContent = ui.note; chart.appendChild(note);
+    }
+    wrap.appendChild(head); wrap.appendChild(chart);
+    return wrap;
+}
+function addUiBlock(ui) {
+    if (!ui) return document.createElement('div');
+    if (ui.type === 'chart') return addChartBlock(ui);
+    if (ui.type === 'hybrid') return addHybridBlock(ui);
+    return addTableBlock(ui);
+}
+// 混合检索卡片：输入摘要 + 粗排双支路面板 + RRF 精排列表（与 chat.html 同构，返回 wrap 供外部挂载）。
+function addHybridBlock(ui) {
+    const wrap = document.createElement('div'); wrap.className = 'uiblock ub-hybrid';
+    const head = document.createElement('div'); head.className = 'ub-head';
+    head.innerHTML = '<span class="ub-ico">🔀</span>' + escapeHtml(ui.title || '混合检索结果');
+    wrap.appendChild(head);
+
+    const inp = ui.input || {};
+    const sum = document.createElement('div'); sum.className = 'hyb-sum';
+    const chip = (label, val, cls) => '<span class="hyb-chip ' + (cls || '') + '"><b>' + label
+        + '：</b>' + escapeHtml(String(val)) + '</span>';
+    sum.innerHTML = chip('语义', inp.query_text || '(无)', 'c-vec')
+        + chip('全文', inp.keyword || '(无)', 'c-ft')
+        + chip('标量', inp.scalar_filter || '(无)', 'c-scalar')
+        + chip('TopN', inp.top_n != null ? inp.top_n : '', 'c-n');
+    wrap.appendChild(sum);
+
+    const coarse = ui.coarse || {};
+    const panels = document.createElement('div'); panels.className = 'hyb-coarse';
+    panels.appendChild(hybBranch('向量近邻（粗排·L2 升序）', coarse.vector || [], false));
+    panels.appendChild(hybBranch('全文倒排（粗排·相关性降序）', coarse.fulltext || [], true));
+    wrap.appendChild(panels);
+
+    const fusedWrap = document.createElement('div'); fusedWrap.className = 'hyb-fused';
+    const fh = document.createElement('div'); fh.className = 'hyb-fh';
+    fh.innerHTML = '<span class="ub-ico">🏆</span> RRF 精排（融合 Top' + (ui.fused || []).length + '）';
+    fusedWrap.appendChild(fh);
+    const fl = document.createElement('div'); fl.className = 'hyb-flist';
+    (ui.fused || []).forEach(f => {
+        const row = document.createElement('div'); row.className = 'hyb-fitem';
+        const badges = [];
+        (f.branches || []).forEach(b => badges.push(b === 'vector'
+            ? '<span class="b-badge v">V</span>' : '<span class="b-badge f">F</span>'));
+        const scoreParts = [];
+        if (f.vector_score != null) scoreParts.push('L2=' + f.vector_score);
+        if (f.fulltext_score != null) scoreParts.push('rel=' + f.fulltext_score);
+        row.innerHTML = '<span class="hyb-rank">#' + f.rank + '</span>'
+            + '<span class="hyb-badges">' + badges.join('') + '</span>'
+            + '<span class="hyb-fname">' + escapeHtml(f.name || '') + '</span>'
+            + '<span class="hyb-fmeta">★' + (f.rating != null ? f.rating : '') + ' · ' + escapeHtml(String(f.author || '')) + '</span>'
+            + '<span class="hyb-fscore" title="' + escapeHtml(scoreParts.join('，')) + '">∑' + (f.fused_score != null ? f.fused_score : '') + '</span>';
+        fl.appendChild(row);
+    });
+    fusedWrap.appendChild(fl);
+    wrap.appendChild(fusedWrap);
+
+    if (ui.note) {
+        const note = document.createElement('div'); note.className = 'ub-note';
+        note.textContent = ui.note;
+        wrap.appendChild(note);
+    }
+    return wrap;
+}
+function hybBranch(title, items, fulltext) {
+    const b = document.createElement('div'); b.className = 'hyb-branch ' + (fulltext ? 'ft' : 'vec');
+    const h = document.createElement('div'); h.className = 'hyb-bh';
+    h.innerHTML = '<span class="hyb-bico">' + (fulltext ? '🔤' : '🧭') + '</span>' + escapeHtml(title)
+        + ' <span class="hyb-cnt">(' + items.length + ')</span>';
+    b.appendChild(h);
+    const list = document.createElement('div'); list.className = 'hyb-blist';
+    items.forEach(it => {
+        const row = document.createElement('div'); row.className = 'hyb-bitem';
+        const sc = fulltext ? (it.relevance != null ? 'rel=' + it.relevance : '')
+                            : (it.l2_distance != null ? 'L2=' + it.l2_distance : '');
+        row.innerHTML = '<span class="hyb-bname">' + escapeHtml(it.name || '') + '</span>'
+            + '<span class="hyb-bmeta">★' + (it.rating != null ? it.rating : '') + '</span>'
+            + '<span class="hyb-bscore">' + escapeHtml(sc) + '</span>';
+        list.appendChild(row);
+    });
+    if (!items.length) {
+        const empty = document.createElement('div'); empty.className = 'hyb-bitem empty';
+        empty.textContent = '（该支路无候选）';
+        list.appendChild(empty);
+    }
+    b.appendChild(list);
+    return b;
+}
+
+function render(share) {
+    $('meta').innerHTML = '标题：<b>' + escapeHtml(share.title) + '</b>　·　分享于 ' + fmtTime(share.createdAt) + '　·　共 ' + share.messages.length + ' 条消息';
+    const box = $('messages'); box.innerHTML = '';
+    share.messages.forEach(m => {
+        if (m.type === 'user') {
+            const w = document.createElement('div'); w.className = 'msg user';
+            w.innerHTML = '<div class="role">用户</div><div class="bubble">' + escapeHtml(m.content) + '</div>';
+            box.appendChild(w);
+        } else if (m.type === 'assistant') {
+            const w = document.createElement('div'); w.className = 'msg agent';
+            w.innerHTML = '<div class="role">agent-hub</div><div class="bubble">' + escapeHtml(m.content) + '</div>';
+            box.appendChild(w);
+        } else if (m.type === 'tool_call') {
+            const c = document.createElement('div'); c.className = 'toolcard';
+            const head = '🔧 调用工具 ' + escapeHtml(m.toolName || '');
+            const body = m.arguments || '';
+            c.innerHTML = '<div class="t-head">' + head + '</div><div class="t-body"><pre>' + escapeHtml(body) + '</pre></div>';
+            box.appendChild(c);
+        } else if (m.type === 'tool_result') {
+            // A2UI 结构化结果：表格 / 图表卡片直接渲染；否则退回纯文本卡片。
+            if (isUiJson(m.content)) {
+                box.appendChild(addUiBlock(parseUi(m.content)));
+            } else {
+                const c = document.createElement('div'); c.className = 'toolcard result';
+                const head = '✅ 工具结果 ' + escapeHtml(m.toolName || '');
+                const body = m.content || '';
+                c.innerHTML = '<div class="t-head">' + head + '</div><div class="t-body"><pre>' + escapeHtml(body) + '</pre></div>';
+                box.appendChild(c);
+            }
+        }
+    });
+}
+
+function toMarkdown(share) {
+    let md = '# ' + (share.title || 'agent-hub 对话') + '\n\n';
+    share.messages.forEach(m => {
+        if (m.type === 'user') md += '**用户：**\n' + (m.content || '') + '\n\n';
+        else if (m.type === 'assistant') md += (m.content || '') + '\n\n';
+        else if (m.type === 'tool_call') md += '> 🔧 调用工具 `' + (m.toolName || '') + '`\n>\n> ```\n' + (m.arguments || '') + '\n```\n\n';
+        else if (m.type === 'tool_result') md += '> ✅ 工具结果 `' + (m.toolName || '') + '`\n>\n> ```\n' + (m.content || '') + '\n```\n\n';
+    });
+    return md;
+}
+
+$('copyBtn').addEventListener('click', async () => {
+    try { await navigator.clipboard.writeText(toMarkdown(window.__share)); toast('已复制为 Markdown'); }
+    catch (_) { toast('复制失败'); }
+});
+
+(async () => {
+    if (!shareId) { $('meta').textContent = ''; $('empty').style.display = 'block'; return; }
+    try {
+        const resp = await fetch('/api/agent/share/' + encodeURIComponent(shareId));
+        if (!resp.ok) throw new Error('HTTP ' + resp.status);
+        const share = await resp.json();
+        window.__share = share;
+        render(share);
+    } catch (e) {
+        $('meta').textContent = '';
+        $('empty').style.display = 'block';
+    }
+})();
+</script>
+</body>
+</html>

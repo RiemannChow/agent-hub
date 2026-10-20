@@ -1,0 +1,8 @@
+requests>=2.31.0
+beautifulsoup4>=4.12.0
+trafilatura>=1.6.0
+neo4j>=5.16.0
+PyGithub>=2.1.0
+python-dotenv>=1.0.0
+pyyaml>=6.0
+tqdm>=4.66.0
