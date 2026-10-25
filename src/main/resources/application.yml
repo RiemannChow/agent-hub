@@ -3,6 +3,17 @@ spring:
     name: agent-hub
   profiles:
     active: seekdb
+  # ============ Nacos 服务注册 / 发现（A2A 智能体服务发现） ============
+  cloud:
+    nacos:
+      discovery:
+        server-addr: ${NACOS_ADDR:127.0.0.1:8848}
+        enabled: true
+        # 注册到 Nacos 的元数据：对端智能体据此找到本实例的 A2A 端点与 Agent Card
+        metadata:
+          a2a-endpoint: ${AGENT_PUBLIC_URL:http://localhost:8080}/a2a
+          a2a-card: ${AGENT_PUBLIC_URL:http://localhost:8080}/.well-known/agent.json
+          version: "1.0.0"
 
 # ============ SeekDB / OceanBase（兼容 MySQL 协议） ============
 ---
@@ -66,6 +77,12 @@ agent:
   books:
     # 数据集文件名（sql/ 目录或 classpath 均可），对应 Kaggle: Amazon Top 50 Bestselling Books 2009-2019
     csv-path: sql/bestsellers_with_categories.csv
+  # ============ A2A（Agent-to-Agent）协议对外暴露的配置 ============
+  a2a:
+    # 本智能体对外可访问的基础地址（注册到 Nacos、写进 Agent Card 的 url 用）；
+    # 容器/多实例部署时改为宿主 IP 或网关地址。
+    public-url: ${AGENT_PUBLIC_URL:http://localhost:8080}
+    version: "1.0.0"
 
 # ============ OceanBase 知识图谱问答（Neo4j 后端） ============
 ---

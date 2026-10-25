@@ -22,6 +22,19 @@
         <agentscope.version>2.0.3</agentscope.version>
     </properties>
 
+    <dependencyManagement>
+        <dependencies>
+            <!-- Spring Cloud Alibaba 2023.0.3.x 兼容 Spring Boot 3.3.x / Spring Cloud 2023.0.x -->
+            <dependency>
+                <groupId>com.alibaba.cloud</groupId>
+                <artifactId>spring-cloud-alibaba-dependencies</artifactId>
+                <version>2023.0.3.2</version>
+                <type>pom</type>
+                <scope>import</scope>
+            </dependency>
+        </dependencies>
+    </dependencyManagement>
+
     <dependencies>
         <!-- ===== AgentScope Java 2.0（io.agentscope 已发布到 Maven Central，JDK 17+） ===== -->
         <dependency>
@@ -71,6 +84,12 @@
         <dependency>
             <groupId>io.projectreactor</groupId>
             <artifactId>reactor-core</artifactId>
+        </dependency>
+
+        <!-- ===== Nacos 服务注册 / 发现（A2A 智能体服务发现依赖） ===== -->
+        <dependency>
+            <groupId>com.alibaba.cloud</groupId>
+            <artifactId>spring-cloud-starter-alibaba-nacos-discovery</artifactId>
         </dependency>
 
         <!-- ===== 配置绑定 ===== -->

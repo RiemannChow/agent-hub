@@ -60,6 +60,11 @@ public class AuthenticationWebFilter implements WebFilter {
         if (path.startsWith("/share/")) return true; // 重定向控制器
         // 公开分享快照（只读），仅 GET
         if (path.startsWith("/api/agent/share/") && ex.getRequest().getMethod() == HttpMethod.GET) return true;
+        // A2A 协议对外暴露面（Agent Card / JSON-RPC 端点 / 服务发现视图）必须免登录，
+        // 以便 Nacos 服务发现拉取 Agent Card、以及 A2A 客户端直接调用 JSON-RPC，无需 UI 登录态。
+        if (path.equals("/.well-known/agent.json")) return true;
+        if (path.equals("/a2a/agents")) return true;
+        if (path.equals("/a2a")) return true;
         return false;
     }
 

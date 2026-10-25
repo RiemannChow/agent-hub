@@ -77,9 +77,37 @@ services:
       retries: 10
       start_period: 30s
 
+  # ============ Nacos（服务注册 / 发现中心，端口 8848） ============
+  nacos:
+    image: nacos/nacos-server:v2.5.0
+    container_name: agent-hub-nacos
+    ports:
+      - "8848:8848"   # HTTP API / 控制台
+      # Nacos 2.x 客户端经 gRPC 通信：8848 + 1000 = 9848（主），+ 1001 = 9849（raft）。
+      # 不暴露这两个端口时，客户端会卡在 "Client not connected, status:STARTING" 导致注册失败。
+      - "9848:9848"
+      - "9849:9849"
+    environment:
+      MODE: standalone                       # 单机模式（演示用，无需集群）
+      NACOS_AUTH_ENABLE: "false"            # 本地演示关闭鉴权
+      # 必须让 -Xms 与 -Xmx 相等，否则 Nacos 默认 -Xms1g 会大于 -Xmx 导致 JVM 启动失败；
+      # -Xmn 也需小于 -Xmx。
+      JVM_XMS: "512m"
+      JVM_XMX: "512m"
+      JVM_XMN: "256m"
+    volumes:
+      - nacos_data:/home/nacos/data
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q -O /dev/null http://localhost:8848/nacos/actuator/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 40s
+
 volumes:
   seekdb_data:
   mongo_data:
   neo4j_data:
   neo4j_logs:
   neo4j_import:
+  nacos_data:
