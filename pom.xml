@@ -22,6 +22,8 @@
         <agentscope.version>2.0.3</agentscope.version>
         <!-- 与 agentscope-core 传递依赖的 opentelemetry-api 版本保持一致，避免 api/sdk 版本错配 -->
         <opentelemetry.version>1.61.0</opentelemetry.version>
+        <!-- SQL 静态解析：用于对 LLM 生成的 SQL 做只读/表白名单/LIMIT 改写（SQL 守卫） -->
+        <jsqlparser.version>4.9</jsqlparser.version>
     </properties>
 
     <dependencyManagement>
@@ -100,6 +102,15 @@
             <groupId>io.opentelemetry</groupId>
             <artifactId>opentelemetry-exporter-otlp</artifactId>
             <version>${opentelemetry.version}</version>
+        </dependency>
+
+        <!-- ===== SQL 守卫：对 LLM 生成的 SQL 做静态解析与改写 =====
+             仅用于解析校验（是否单条 SELECT / 表是否在白名单 / 是否含危险函数），
+             不参与任何 SQL 拼装之外的执行逻辑。 -->
+        <dependency>
+            <groupId>com.github.jsqlparser</groupId>
+            <artifactId>jsqlparser</artifactId>
+            <version>${jsqlparser.version}</version>
         </dependency>
 
         <!-- ===== Nacos 服务注册 / 发现（A2A 智能体服务发现依赖） ===== -->

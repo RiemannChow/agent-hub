@@ -1,11 +1,13 @@
 package com.riemann.agent.infrastructure.config;
 
 import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Qualifier;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 
 import io.agentscope.core.ReActAgent;
+import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
 
@@ -41,7 +43,10 @@ public class AgentConfig {
                                  SeekBookSearchTool seekBookSearchTool,
                                  SeekBookCountByYearTool seekBookCountByYearTool,
                                  SaveMemoryTool saveMemoryTool,
-                                 ObjectProvider<AgentScopeMiddlewareChain> middlewareChain) {
+                                 ObjectProvider<AgentScopeMiddlewareChain> middlewareChain,
+                                 @Qualifier("modelExecutionConfig") ExecutionConfig modelExecutionConfig,
+                                 @Qualifier("toolExecutionConfig") ExecutionConfig toolExecutionConfig,
+                                 FallbackModelHolder fallbackModelHolder) {
         AgentPersona persona = personaProvider.getPersona();
         // 把带有 @Tool 方法的 POJO 逐个注册进 AgentScope 的 Toolkit
         Toolkit agentToolkit = new Toolkit();
@@ -57,7 +62,14 @@ public class AgentConfig {
                 .sysPrompt(persona.renderSystemPrompt())
                 .model(agentModel)
                 .toolkit(agentToolkit)
-                .maxIters(30);
+                .maxIters(30)
+                // 超时/重试：显式下发，避免沿用框架「模型 5 分钟、工具 5 分钟」的宽兜底默认值
+                .modelExecutionConfig(modelExecutionConfig)
+                .toolExecutionConfig(toolExecutionConfig);
+        // 降级：仅在配置了 agent.model.fallback.name 时启用
+        if (fallbackModelHolder != null && fallbackModelHolder.isPresent()) {
+            builder.fallbackModel(fallbackModelHolder.model());
+        }
         // 可观测性（Langfuse）：仅 langfuse.enabled=true 时容器里才有该链，否则保持零开销
         middlewareChain.ifAvailable(chain -> chain.middlewares().forEach(builder::middleware));
         return builder.build();

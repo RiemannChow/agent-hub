@@ -7,6 +7,7 @@ import com.riemann.agent.domain.ConversationId;
 import com.riemann.agent.domain.ConversationRepository;
 import com.riemann.agent.domain.Message;
 import com.riemann.agent.domain.ScoredConversation;
+import com.riemann.agent.infrastructure.seekdb.sql.SqlGuard;
 
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
@@ -20,6 +21,7 @@ import jakarta.annotation.PostConstruct;
 import java.sql.Timestamp;
 import java.time.Instant;
 import java.util.ArrayList;
+import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
@@ -41,8 +43,12 @@ public class SeekDbConversationRepository implements ConversationRepository {
 
     private final JdbcTemplate jdbc;
 
-    public SeekDbConversationRepository(JdbcTemplate jdbcTemplate) {
+    /** LLM 生成的 SQL 必须先过这道守卫（只读 / 白名单 / 强制 LIMIT），仓储层不再直接执行裸 SQL。 */
+    private final SqlGuard sqlGuard;
+
+    public SeekDbConversationRepository(JdbcTemplate jdbcTemplate, SqlGuard sqlGuard) {
         this.jdbc = jdbcTemplate;
+        this.sqlGuard = sqlGuard;
     }
 
     // ===================== Repository Port 实现 =====================
@@ -226,32 +232,57 @@ public class SeekDbConversationRepository implements ConversationRepository {
     }
 
     /**
-     * 通用 SQL 问数（SELECT），返回结构化行（List<Map>），供图表类工具做聚合后产出 A2UI chart。
-     * 仅支持 SELECT；查询失败时由上层 onErrorReturn 兜底。
+     * 通用 SQL 问数（SELECT），返回结构化行（List&lt;Map&gt;），供图表类工具做聚合后产出 A2UI chart。
+     *
+     * <p>这里的 SQL 来自 LLM，属于不可信输入：先经 {@link SqlGuard} 做只读/单语句/表白名单校验
+     * 并强制包裹 LIMIT，再以 {@code setQueryTimeout} + {@code setMaxRows} 双重兜底执行，
+     * 避免全表扫描打爆堆内存或慢查询占满连接池。</p>
      */
     public Mono<List<Map<String, Object>>> queryForMaps(String sql) {
-        return Mono.fromCallable(() -> jdbc.queryForList(sql))
+        return Mono.fromCallable(() -> {
+                    String safeSql = sqlGuard.guard(sql);
+                    return jdbc.query(safeSql,
+                            ps -> {
+                                ps.setQueryTimeout(sqlGuard.queryTimeoutSeconds());
+                                ps.setMaxRows(sqlGuard.maxRows());
+                            },
+                            (rs, rowNum) -> {
+                                var md = rs.getMetaData();
+                                int cols = md.getColumnCount();
+                                Map<String, Object> row = new LinkedHashMap<>(Math.max(cols, 1));
+                                for (int i = 1; i <= cols; i++) {
+                                    row.put(md.getColumnLabel(i), rs.getObject(i));
+                                }
+                                return row;
+                            });
+                })
                 .subscribeOn(Schedulers.boundedElastic());
     }
 
-    /** 通用 SQL 问数（SELECT），返回文本结果。 */
+    /** 通用 SQL 问数（SELECT），返回文本结果。同样经过 {@link SqlGuard} 校验。 */
     public Mono<String> runQuery(String sql) {
         return Mono.fromCallable(() -> {
+                    String safeSql = sqlGuard.guard(sql);
                     StringBuilder sb = new StringBuilder();
-                    jdbc.query(sql, rs -> {
-                        try {
-                            var md = rs.getMetaData();
-                            int cols = md.getColumnCount();
-                            while (rs.next()) {
-                                for (int i = 1; i <= cols; i++) {
-                                    sb.append(md.getColumnLabel(i)).append("=")
-                                      .append(rs.getString(i)).append(" | ");
+                    jdbc.query(safeSql,
+                            ps -> {
+                                ps.setQueryTimeout(sqlGuard.queryTimeoutSeconds());
+                                ps.setMaxRows(sqlGuard.maxRows());
+                            },
+                            rs -> {
+                                try {
+                                    var md = rs.getMetaData();
+                                    int cols = md.getColumnCount();
+                                    while (rs.next()) {
+                                        for (int i = 1; i <= cols; i++) {
+                                            sb.append(md.getColumnLabel(i)).append("=")
+                                              .append(rs.getString(i)).append(" | ");
+                                        }
+                                        sb.append("\n");
+                                    }
+                                } catch (Exception ignored) {
                                 }
-                                sb.append("\n");
-                            }
-                        } catch (Exception ignored) {
-                        }
-                    });
+                            });
                     return sb.toString();
                 })
                 .subscribeOn(Schedulers.boundedElastic());

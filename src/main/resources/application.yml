@@ -73,6 +73,40 @@ agent:
     api-key: ${AGENT_MODEL_API_KEY:}
     base-url: ${AGENT_MODEL_BASE_URL:https://api.lkeap.cloud.tencent.com/plan/anthropic}
     name: ${AGENT_MODEL_NAME:hy4-preview}
+    # 可选兜底模型：主模型重试耗尽后仍失败时切到它继续本轮。
+    # 留空 name 即不启用；base-url / api-key 留空则复用主模型的网关与凭据。
+    fallback:
+      name: ${AGENT_FALLBACK_MODEL_NAME:}
+      base-url: ${AGENT_FALLBACK_BASE_URL:}
+      api-key: ${AGENT_FALLBACK_API_KEY:}
+  # ============ 执行层：超时 / 重试 / 整轮上限 ============
+  # AgentScope 自带默认值（模型 5 分钟 / 3 次、工具 5 分钟 / 1 次），偏宽且不可运营，
+  # 这里显式下发：模型单次超时可重试、工具默认不重试（避免副作用重复执行）、
+  # turn-timeout 兜住整轮总时长，保证前端 SSE 一定能收到终止信号。
+  execution:
+    turn-timeout: ${AGENT_TURN_TIMEOUT:300s}
+    model:
+      timeout: ${AGENT_MODEL_TIMEOUT:120s}
+      max-attempts: ${AGENT_MODEL_MAX_ATTEMPTS:3}
+      initial-backoff: 500ms
+      max-backoff: 5s
+      backoff-multiplier: 2.0
+    tool:
+      timeout: ${AGENT_TOOL_TIMEOUT:30s}
+      max-attempts: ${AGENT_TOOL_MAX_ATTEMPTS:1}
+  # ============ SQL 守卫：LLM 生成的 SQL 下发前必须过的静态校验 ============
+  # 只放行「单条 SELECT + 白名单表 + 无危险函数」，并强制在外层包一层 LIMIT。
+  # 白名单刻意不含 conversation / message / memory —— 这些表存放其他用户的会话与隐私。
+  sql-guard:
+    enabled: ${AGENT_SQL_GUARD_ENABLED:true}
+    allowed-tables:
+      - products
+      - users
+      - orders
+      - book_info
+    max-rows: ${AGENT_SQL_MAX_ROWS:200}
+    query-timeout-seconds: ${AGENT_SQL_QUERY_TIMEOUT_SECONDS:10}
+    max-length: 4000
   # ============ 图书混合检索（Java 版） ============
   books:
     # 数据集文件名（sql/ 目录或 classpath 均可），对应 Kaggle: Amazon Top 50 Bestselling Books 2009-2019

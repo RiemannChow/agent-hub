@@ -34,7 +34,10 @@ public class SeekSqlQueryTool {
           description = "对 SeekDB 执行通用 SELECT 问数 SQL，返回查询结果。"
                   + "当用户要算结构化指标（如“各城市GMV”“最畅销商品”“各品类销量”“用户数”）等基于 products/users/orders 表的问数时用。"
                   + "若结果是「两列：类别 + 数值」（如 GROUP BY 聚合），会自动输出图表结构（前端渲染成柱状图）；"
-                  + "多列明细仍以文本返回。图书按年份分布请用 seek_book_count_by_year（图书专属图表）。")
+                  + "多列明细仍以文本返回。图书按年份分布请用 seek_book_count_by_year（图书专属图表）。"
+                  + "【约束】只能写单条标准 MySQL SELECT；可查询的表仅限 products / users / orders / book_info，"
+                  + "禁止多语句、写操作、information_schema、FOR UPDATE 与 SLEEP/BENCHMARK 等函数；"
+                  + "单次最多返回 200 行、执行超时 10 秒，因此聚合时请自行加 WHERE / GROUP BY 收敛结果集。")
     public Mono<String> seekSqlQuery(
             @ToolParam(name = "sql", description = "要执行的 SELECT SQL") String sql) {
         return seekDb.queryForMaps(sql).map(rows -> {
@@ -65,7 +68,22 @@ public class SeekSqlQueryTool {
             }
             // 否则：文本结果（保持 col=val | 格式）
             return formatRowsAsText(rows);
-        }).onErrorReturn("查询执行失败，请检查 SQL：" + sql);
+        }).onErrorResume(e -> Mono.just(describeFailure(sql, e)));
+    }
+
+    /**
+     * 把执行/校验失败转成「模型能据此自我纠错」的提示。
+     *
+     * <p>SQL 守卫的拒绝原因（如「表 x 不在白名单内」「只允许单条语句」）本身就是给模型看的，
+     * 直接回传能显著提高二次尝试的成功率；DB 报错则截断，避免把过长堆栈塞进上下文。</p>
+     */
+    private String describeFailure(String sql, Throwable e) {
+        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        msg = msg.replaceAll("\\s+", " ").trim();
+        if (msg.length() > 300) {
+            msg = msg.substring(0, 300) + "...";
+        }
+        return "SQL 执行失败：" + msg + "。请修正后重试（原 SQL：" + sql + "）。";
     }
 
     /** 判断查询结果是否为「两列 + 第二列数值」的可图表化聚合。 */

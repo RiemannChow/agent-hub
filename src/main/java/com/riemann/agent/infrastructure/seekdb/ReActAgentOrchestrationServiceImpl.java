@@ -6,7 +6,9 @@ import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
 import com.riemann.agent.domain.Conversation;
 import com.riemann.agent.domain.Message;
-import com.riemann.agent.infrastructure.toolkit.tools.SaveMemoryTool;
+import com.riemann.agent.infrastructure.execution.AgentExecutionProperties;
+import com.riemann.agent.infrastructure.execution.TurnTimeout;
+import com.riemann.agent.infrastructure.toolkit.tools.AgentCallContext;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.message.AssistantMessage;
 import io.agentscope.core.message.Msg;
@@ -34,18 +36,15 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
     private final ReActAgent reactAgent;
     private final AgentEventMapper mapper;
     private final MemoryService memoryService;
-    /**
-     * 当前会话用户载体。编排层在每轮对话前后调用其 setCurrentUser / clearCurrentUser，
-     * 使 save_memory 工具能按正确的 userId 落库（AgentScope 工具方法签名无法携带请求上下文）。
-     */
-    private final SaveMemoryTool saveMemoryTool;
+    private final AgentExecutionProperties executionProperties;
 
     public ReActAgentOrchestrationServiceImpl(ReActAgent reactAgent, AgentEventMapper mapper,
-                                              MemoryService memoryService, SaveMemoryTool saveMemoryTool) {
+                                              MemoryService memoryService,
+                                              AgentExecutionProperties executionProperties) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.memoryService = memoryService;
-        this.saveMemoryTool = saveMemoryTool;
+        this.executionProperties = executionProperties;
     }
 
     @Override
@@ -56,8 +55,6 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
                     // 用会话历史 + 召回的长期记忆重建 AgentScope 的 Msg 列表：
                     // buildAgentStream 会自动把 sysPrompt 包成 SystemMessage 前置，因此这里只需按顺序塞入历史消息。
                     List<Msg> history = rebuildHistory(conversation, memoryCtx);
-                    // 本轮将要驱动 Agent 流式执行，先把当前用户告知工具集，供 save_memory 按用户落库；
-                    saveMemoryTool.setCurrentUser(conversation.userId());
                     // 关键修复：AgentScope 的 ReActAgent 会按 sessionId 在内部 AgentState 里累积消息历史。
                     // 若每次都用默认 sessionId，多轮调用会把历史越攒越多，模型锚定在最早的一条消息上
                     // （如首轮“hi”），导致“同一连接后续回答都等于第一个回答”。这里每轮用唯一 sessionId，
@@ -72,15 +69,19 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
                     // session 会导致每轮一条独立会话；真正的会话维度要用 conversation.id。
                     rc.put(com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes.RUNTIME_SESSION_ID,
                             conversation.id().value());
+                    // 并发安全：把本轮调用者上下文按请求挂到 RuntimeContext 上。
+                    // save_memory 等工具通过方法参数（不带 @ToolParam 的 AgentCallContext）按类型取用，
+                    // 不再依赖单例 Bean 上的可变字段，因此同用户多标签页并发不会写错 userId。
+                    rc.put(AgentCallContext.class,
+                            new AgentCallContext(conversation.userId(), conversation.id().value()));
                     // AgentScope Java 2.0：streamEvents(List<Msg>, RuntimeContext) 返回 Flux<AgentEvent>（框架事件）
-                    Flux<io.agentscope.core.event.AgentEvent> upstream = reactAgent.streamEvents(history, rc)
-                            // 流结束后清空当前用户，避免跨会话误写
-                            .doFinally(signal -> saveMemoryTool.clearCurrentUser());
+                    Flux<io.agentscope.core.event.AgentEvent> upstream = reactAgent.streamEvents(history, rc);
                     // 注意：必须用 mapNotNull 而非 map().filter()。Reactor 的 map 不允许 mapper 返回 null，
                     // 而 AgentEventMapper 对未映射的框架事件返回 null，会抛
                     // “The mapper returned a null value” -> NullPointerException / UnsupportedOperationException。
-                    return upstream
-                            .mapNotNull(mapper::toDomain)
+                    Flux<AgentEvent> domain = upstream.mapNotNull(mapper::toDomain);
+                    // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
+                    return TurnTimeout.apply(domain, executionProperties.getTurnTimeout())
                             .concatWithValues(new AgentEvent.Completed(conversation.id().value()));
                 });
     }

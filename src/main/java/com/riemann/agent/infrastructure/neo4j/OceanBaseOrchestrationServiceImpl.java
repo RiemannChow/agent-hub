@@ -5,6 +5,8 @@ import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
 import com.riemann.agent.domain.Conversation;
 import com.riemann.agent.domain.Message;
+import com.riemann.agent.infrastructure.execution.AgentExecutionProperties;
+import com.riemann.agent.infrastructure.execution.TurnTimeout;
 import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
@@ -39,10 +41,13 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
 
     private final ReActAgent reactAgent;
     private final AgentEventMapper mapper;
+    private final AgentExecutionProperties executionProperties;
 
-    public OceanBaseOrchestrationServiceImpl(ReActAgent reactAgent, AgentEventMapper mapper) {
+    public OceanBaseOrchestrationServiceImpl(ReActAgent reactAgent, AgentEventMapper mapper,
+                                             AgentExecutionProperties executionProperties) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
+        this.executionProperties = executionProperties;
     }
 
     @Override
@@ -54,8 +59,9 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
                 .build();
         // 可观测性：sessionId 是每轮唯一的，Langfuse 的会话维度要用稳定的 conversation.id
         rc.put(LangfuseSpanAttributes.RUNTIME_SESSION_ID, conversation.id().value());
-        return reactAgent.streamEvents(history, rc)
-                .mapNotNull(mapper::toDomain)
+        // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
+        return TurnTimeout.apply(reactAgent.streamEvents(history, rc).mapNotNull(mapper::toDomain),
+                        executionProperties.getTurnTimeout())
                 .concatWithValues(new AgentEvent.Completed(conversation.id().value()));
     }
 
