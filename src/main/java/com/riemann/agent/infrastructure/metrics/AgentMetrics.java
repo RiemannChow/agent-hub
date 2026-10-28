@@ -81,6 +81,24 @@ public class AgentMetrics {
                 .increment();
     }
 
+    /** 工具结果被截断/预算拦截的次数：高了说明该收紧工具的返回体量或查询条件。 */
+    public void recordToolTruncated(String toolName) {
+        Counter.builder("agent.tool.truncated")
+                .description("工具结果被截断（单次上限或单轮预算）的次数")
+                .tag("tool", safeTag(toolName))
+                .register(registry)
+                .increment();
+    }
+
+    /** 工具被熔断的次数：连续失败到阈值后不再回填真实错误。 */
+    public void recordToolCircuitOpen(String toolName) {
+        Counter.builder("agent.tool.circuit_open")
+                .description("工具连续失败被熔断的次数")
+                .tag("tool", safeTag(toolName))
+                .register(registry)
+                .increment();
+    }
+
     private void incrementTokens(String type, int tokens) {
         if (tokens <= 0) return;
         Counter.builder("agent.tokens")

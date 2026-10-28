@@ -24,6 +24,7 @@ public class OceanBaseToolkit {
     }
 
     @Tool(name = "ob_doc_search",
+          readOnly = true,
           description = "在 OceanBase 知识图谱中做【全文检索】：覆盖官方文档、章节、概念、代码文件与类名。"
                   + "当用户问“XX 是什么/怎么配置/报错怎么处理”“有没有关于资源池的文档”等需要查资料时优先用。")
     public Mono<String> obDocSearch(
@@ -32,6 +33,7 @@ public class OceanBaseToolkit {
     }
 
     @Tool(name = "ob_topology",
+          readOnly = true,
           description = "查看 OceanBase 的【部署/架构拓扑】：给定实体名（如 Tenant / Zone / OBServer / 资源池），"
                   + "返回它在图谱中的直接关系（HAS_TENANT、HOSTS、LOCATED_ON、REPLICATED_AS 等）。"
                   + "当用户问“Tenant 和 Cluster 什么关系”“一个 Zone 里有哪些 Server”“副本分布在哪”等拓扑问题时用。")
@@ -41,6 +43,7 @@ public class OceanBaseToolkit {
     }
 
     @Tool(name = "ob_code_search",
+          readOnly = true,
           description = "在 OceanBase 主仓库代码中按名称/路径检索【文件/类/函数】。"
                   + "当用户问“XX 功能在哪个类/文件实现”“ObTenant 这个类在哪”“某个函数在哪定义”时用。")
     public Mono<String> obCodeSearch(
@@ -49,6 +52,7 @@ public class OceanBaseToolkit {
     }
 
     @Tool(name = "ob_concept",
+          readOnly = true,
           description = "展开某个【概念节点】在图谱中的关系（RELATED_TO / MAPS_TO 到部署实体 / IMPLEMENTS 由哪些类实现）。"
                   + "当用户想理解“Paxos 在 OceanBase 里怎么用”“租户对应哪些代码/实体”等概念关联问题时用。")
     public Mono<String> obConcept(
@@ -57,6 +61,7 @@ public class OceanBaseToolkit {
     }
 
     @Tool(name = "ob_cypher",
+          readOnly = true,
           description = "对 OceanBase 知识图谱执行一条【只读 Cypher】，返回结果文本。"
                   + "适合需要灵活查询图谱的场景；仅允许 SELECT 类只读语句，写操作会被拦截。")
     public Mono<String> obCypher(

@@ -29,6 +29,9 @@ public class SaveMemoryTool {
     }
 
     @Tool(name = "save_memory",
+          // 写库工具：明确声明「非并发安全」。@Tool 的 concurrencySafe 默认是 true，
+          // 若不改，开启并行工具执行后模型一次返回多个 save_memory 会被同时执行。
+          concurrencySafe = false,
           description = "把值得跨会话记住的稳定事实写入【长期记忆】：用户偏好/背景（如“用户偏好科幻小说”“预算低于15美元”"
                   + "“用户是电商分析师”）、或本轮得出的重要结论。短期记忆（当前对话历史）已自动提供，无需保存；"
                   + "只保存会跨会话复用的内容。写入后下一轮对话会自动召回注入上下文。")

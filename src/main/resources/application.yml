@@ -178,6 +178,43 @@ agent:
     # 工具执行中被中断后的恢复（与「停止生成」配合；建议先在真实模型环境验证）
     pending-tool-recovery: ${AGENT_NATIVE_PENDING_TOOL_RECOVERY:false}
 
+  # ============ 工具调用：并行执行 + 结果治理 ============
+  toolkit:
+    # 模型一次返回多个 tool_use 时并发执行。
+    # 前提是工具如实声明 readOnly / concurrencySafe：写库类工具（save_memory、
+    # seek_fork_sandbox）已标 concurrencySafe=false，框架不会把它们放进并行批次。
+    parallel: ${AGENT_TOOL_PARALLEL:true}
+    # 结果治理：解决「一次检索几万字符顶爆上下文」与「工具报错后模型反复重试直到 maxIters」。
+    governance:
+      enabled: ${AGENT_TOOL_GOVERNANCE_ENABLED:true}
+      # 单次工具结果字符上限，超出截断并标注
+      max-result-chars: ${AGENT_TOOL_MAX_RESULT_CHARS:8000}
+      # 单轮内所有工具结果累计上限，超出后只回填一句说明
+      turn-budget-chars: ${AGENT_TOOL_TURN_BUDGET_CHARS:60000}
+      # 同一工具本轮连续失败多少次后熔断（后续只回填「禁止重试」）
+      max-consecutive-failures: ${AGENT_TOOL_MAX_CONSECUTIVE_FAILURES:3}
+
+  # ============ Neo4j 只读 Cypher 守卫（ob_cypher 工具） ============
+  # 改造前只有一条正则黑名单：拦不住 CALL apoc.load.json(...)（SSRF）、
+  # CALL apoc.cypher.run('...')（动态执行绕过），却会误杀 WHERE n.name = 'SET'。
+  neo4j:
+    guard:
+      enabled: ${AGENT_CYPHER_GUARD_ENABLED:true}
+      max-length: 4000
+      max-rows: 50
+      # 过程白名单：默认只含内置只读过程。apoc.* 一律不放行——
+      # apoc.load.* 可发起外部请求，apoc.cypher.run / apoc.periodic.iterate 可绕过静态检查。
+      allowed-procedures:
+        - db.labels
+        - db.relationshipTypes
+        - db.propertyKeys
+        - db.index.fulltext.queryNodes
+        - db.index.fulltext.queryRelationships
+        - db.schema.visualization
+        - dbms.components
+        - dbms.procedures
+        - dbms.functions
+
 # ============ 可观测性：Actuator + Micrometer（指标 / 健康检查） ============
 # Langfuse 回答「这一次调用为什么慢」；Micrometer 回答「今天 P99 多少、工具失败率多少、
 # 一共烧了多少 token」。两者互补，缺一不可。

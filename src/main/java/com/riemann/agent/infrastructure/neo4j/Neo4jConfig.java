@@ -1,5 +1,7 @@
 package com.riemann.agent.infrastructure.neo4j;
 
+import com.riemann.agent.infrastructure.neo4j.cypher.CypherGuard;
+import com.riemann.agent.infrastructure.neo4j.cypher.CypherGuardProperties;
 import org.neo4j.driver.AuthTokens;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.GraphDatabase;
@@ -32,8 +34,13 @@ public class Neo4jConfig {
     }
 
     @Bean
-    public Neo4jRepository neo4jRepository(Driver driver) {
-        return new Neo4jRepository(driver);
+    public CypherGuard cypherGuard(CypherGuardProperties props) {
+        return new CypherGuard(props);
+    }
+
+    @Bean
+    public Neo4jRepository neo4jRepository(Driver driver, CypherGuard guard, CypherGuardProperties props) {
+        return new Neo4jRepository(driver, guard, props.getMaxRows());
     }
 
     @PreDestroy

@@ -21,6 +21,8 @@ public class SeekForkSandboxTool {
     }
 
     @Tool(name = "seek_fork_sandbox",
+          // 会创建数据库快照（有副作用），声明非并发安全，避免并行执行时同时 fork 出多个沙箱
+          concurrencySafe = false,
           description = "为当前 Agent 创建 SeekDB 的 COW 沙箱数据库快照，用于隔离实验性写操作（如改库、写回记忆）。"
                   + "仅在需要“先试后合并”的写操作前调用，普通问数/检索不需要。")
     public Mono<String> seekForkSandbox(

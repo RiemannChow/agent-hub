@@ -16,6 +16,7 @@ import io.agentscope.core.tool.ToolkitConfig;
 import com.riemann.agent.application.AgentPersonaProvider;
 import com.riemann.agent.domain.AgentPersona;
 import com.riemann.agent.infrastructure.observability.AgentScopeMiddlewareChain;
+import com.riemann.agent.infrastructure.toolkit.ToolResultGovernor;
 import com.riemann.agent.infrastructure.toolkit.tools.SaveMemoryTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekBookCountByYearTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekBookSearchTool;
@@ -47,9 +48,17 @@ public class AgentConfig {
                                 SeekSqlQueryTool seekSqlQueryTool,
                                 SeekBookSearchTool seekBookSearchTool,
                                 SeekBookCountByYearTool seekBookCountByYearTool,
-                                SaveMemoryTool saveMemoryTool) {
+                                SaveMemoryTool saveMemoryTool,
+                                @Qualifier("toolExecutionConfig") ExecutionConfig toolExecutionConfig,
+                                @Value("${agent.toolkit.parallel:true}") boolean parallel) {
         Toolkit toolkit = new Toolkit(ToolkitConfig.builder()
                 .allowToolDeletion(true)
+                // 并行执行：模型一次返回多个 tool_use 时并发跑。
+                // 前提是工具如实声明 readOnly / concurrencySafe —— 写库工具（save_memory、
+                // seek_fork_sandbox）已显式标 concurrencySafe=false，框架不会并发调度它们。
+                .parallel(parallel)
+                // 工具层超时/重试沿用 agent.execution.tool.*（单次超时、默认不重试）
+                .executionConfig(toolExecutionConfig)
                 .build());
         // 把带有 @Tool 方法的 POJO 逐个注册进 AgentScope 的 Toolkit
         toolkit.registerTool(seekHybridSearchTool);
@@ -80,6 +89,7 @@ public class AgentConfig {
     public ReActAgent reactAgent(AgentPersonaProvider personaProvider, Model agentModel,
                                  Toolkit agentToolkit,
                                  ObjectProvider<AgentScopeMiddlewareChain> middlewareChain,
+                                 ObjectProvider<ToolResultGovernor> toolGovernor,
                                  @Qualifier("modelExecutionConfig") ExecutionConfig modelExecutionConfig,
                                  @Qualifier("toolExecutionConfig") ExecutionConfig toolExecutionConfig,
                                  FallbackModelHolder fallbackModelHolder,
@@ -101,6 +111,10 @@ public class AgentConfig {
                 .enableTaskList(enableTaskList)
                 .enableMetaTool(enableMetaTool)
                 .enablePendingToolRecovery(enablePendingToolRecovery);
+        // 工具结果治理：单次截断 + 单轮预算 + 连续失败熔断。
+        // 同一个实例既做 Hook（改写 PostActingEvent 里的结果）又做 Middleware
+        // （onActing 里拿到本轮 RuntimeContext，把 toolCallId 与轮次绑定）。
+        toolGovernor.ifAvailable(governor -> builder.hook(governor).middleware(governor));
         // 降级：仅在配置了 agent.model.fallback.name 时启用
         if (fallbackModelHolder != null && fallbackModelHolder.isPresent()) {
             builder.fallbackModel(fallbackModelHolder.model());

@@ -36,37 +36,48 @@ public class SeekBookSearchTool {
     }
 
     @Tool(name = "seek_book_search",
+          readOnly = true,
           description = "在 SeekDB 的 demo_books.book_info 中做【图书混合检索】：向量近邻 + 全文关键词 + 标量过滤"
                   + "（评分/价格/年份/类型/评论数），从 550 本 Amazon 畅销书中找出用户感兴趣的书。"
                   + "当用户问“找本关于XX的书”“有没有科普书”“评分高的书”“便宜的非虚构书”“XX年之后的小说”"
                   + "“评论数>=10000的书籍”“评论多的书”等涉及图书检索时用。"
                   + "返回结果是结构化 JSON（前端会直接渲染成表格卡片），你只需基于结果用一句中文总结结论，不要重复罗列表格内容。")
     public Mono<String> seekBookSearch(
-            @ToolParam(name = "query_text", description = "用于向量语义检索的自然语言，如“self improvement motivation success”“science popularization”；不想做语义检索时可留空") String queryText,
-            @ToolParam(name = "keyword", description = "可选：书名/作者全文关键词过滤（留空则不做全文过滤），如“novel”") String keyword,
-            @ToolParam(name = "min_rating", description = "可选：最低评分过滤（0~5，<=0 不限制）") double minRating,
-            @ToolParam(name = "max_price", description = "可选：最高价格过滤（<=0 不限制）") double maxPrice,
-            @ToolParam(name = "min_year", description = "可选：最早年份过滤（<=0 不限制）") int minYear,
-            @ToolParam(name = "min_reviews", description = "可选：最少评论数过滤（评论数>=该值，<=0 不限制），如 10000") double minReviews,
-            @ToolParam(name = "genre", description = "可选：类型过滤 'Fiction' 或 'Non Fiction'，留空不限制") String genre,
-            @ToolParam(name = "top_n", description = "返回条数，默认5") int topN) {
+            @ToolParam(name = "query_text", description = "用于向量语义检索的自然语言，如“self improvement motivation success”；不想做语义检索时可留空")
+            String queryText,
+            @ToolParam(name = "keyword", description = "可选：书名/作者全文关键词过滤，如“novel”", required = false)
+            String keyword,
+            @ToolParam(name = "min_rating", description = "可选：最低评分过滤（0~5）。不传或 <=0 表示不限制", required = false)
+            Double minRating,
+            @ToolParam(name = "max_price", description = "可选：最高价格过滤。不传或 <=0 表示不限制", required = false)
+            Double maxPrice,
+            @ToolParam(name = "min_year", description = "可选：最早出版年份过滤。不传或 <=0 表示不限制", required = false)
+            Integer minYear,
+            @ToolParam(name = "min_reviews", description = "可选：最少评论数过滤（评论数 >= 该值）。不传或 <=0 表示不限制，如 10000", required = false)
+            Double minReviews,
+            @ToolParam(name = "genre", description = "可选：类型过滤，只能是 'Fiction' 或 'Non Fiction'，不传表示不限制", required = false)
+            String genre,
+            @ToolParam(name = "top_n", description = "可选：返回条数，默认 5，上限 20", required = false)
+            Integer topN) {
         Map<String, Object> where = new LinkedHashMap<>();
-        if (minRating > 0) {
+        // 全部可选参数统一按「null 或非正数 = 不限制」处理：
+        // 这样模型少传、传 0、传 null 都不会改变语义，也就不会因为「参数没填全」被框架拒掉。
+        if (minRating != null && minRating > 0) {
             where.put("user_rating", Map.of("$gte", minRating));
         }
-        if (maxPrice > 0) {
+        if (maxPrice != null && maxPrice > 0) {
             where.put("price", Map.of("$lte", maxPrice));
         }
-        if (minYear > 0) {
+        if (minYear != null && minYear > 0) {
             where.put("year", Map.of("$gte", minYear));
         }
-        if (minReviews > 0) {
-            where.put("reviews", Map.of("$gte", (int) minReviews));
+        if (minReviews != null && minReviews > 0) {
+            where.put("reviews", Map.of("$gte", minReviews.intValue()));
         }
         if (genre != null && !genre.isBlank()) {
             where.put("genre", genre);
         }
-        int n = (topN <= 0) ? 5 : topN;
+        int n = (topN == null || topN <= 0) ? 5 : Math.min(topN, 20);
         String kw = (keyword == null) ? "" : keyword;
         String qt = (queryText == null) ? "" : queryText;
 

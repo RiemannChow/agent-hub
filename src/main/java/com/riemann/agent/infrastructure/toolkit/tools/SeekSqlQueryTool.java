@@ -31,6 +31,8 @@ public class SeekSqlQueryTool {
     }
 
     @Tool(name = "seek_sql_query",
+          // 只读：SqlGuard 保证只放行单条 SELECT，因此可安全并行调度
+          readOnly = true,
           description = "对 SeekDB 执行通用 SELECT 问数 SQL，返回查询结果。"
                   + "当用户要算结构化指标（如“各城市GMV”“最畅销商品”“各品类销量”“用户数”）等基于 products/users/orders 表的问数时用。"
                   + "若结果是「两列：类别 + 数值」（如 GROUP BY 聚合），会自动输出图表结构（前端渲染成柱状图）；"

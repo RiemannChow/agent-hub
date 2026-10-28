@@ -1,13 +1,14 @@
 package com.riemann.agent.infrastructure.neo4j;
 
+import com.riemann.agent.infrastructure.neo4j.cypher.CypherGuard;
 import org.neo4j.driver.Driver;
 import org.neo4j.driver.Result;
 import org.neo4j.driver.Session;
 import org.neo4j.driver.Values;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-
-import java.util.regex.Pattern;
 
 /**
  * Neo4j 只读检索仓储（OceanBase 知识图谱）。
@@ -18,17 +19,22 @@ import java.util.regex.Pattern;
  */
 public class Neo4jRepository {
 
+    private static final Logger log = LoggerFactory.getLogger(Neo4jRepository.class);
+
     private static final int FULLTEXT_LIMIT = 10;
     private static final int TOPO_LIMIT = 60;
     private static final int CODE_LIMIT = 25;
     private static final int CONCEPT_LIMIT = 30;
-    private static final Pattern WRITE_OP = Pattern.compile(
-            "(?i)\\b(CREATE|MERGE|SET|DELETE|DETACH|REMOVE|DROP|INSERT|UPDATE|GRANT|LOAD|CALL\\s+db\\.schema|CALL\\s+db\\.index)\\b");
 
     private final Driver driver;
+    /** 只读守卫：静态判定 + 读事务，两层防线（见 {@link CypherGuard}）。 */
+    private final CypherGuard guard;
+    private final int maxRows;
 
-    public Neo4jRepository(Driver driver) {
+    public Neo4jRepository(Driver driver, CypherGuard guard, int maxRows) {
         this.driver = driver;
+        this.guard = guard;
+        this.maxRows = maxRows <= 0 ? 50 : maxRows;
     }
 
     /** 全文检索：文档/章节/概念/文件/类。 */
@@ -144,26 +150,59 @@ public class Neo4jRepository {
     }
 
     /**
-     * 受限的只读 Cypher 执行。拦截所有写操作（CREATE/MERGE/SET/DELETE/DROP 等），
-     * 仅允许 MATCH/RETURN/WITH/ORDER/SKIP/LIMIT/CALL(只读过程) 等读语句。
+     * 受限的只读 Cypher 执行。
+     *
+     * <p>两层防线：</p>
+     * <ol>
+     *   <li>{@link CypherGuard#check(String)} 静态判定——剥壳后查写关键字、强制单条语句、
+     *       过程白名单（{@code apoc.*} 默认全禁，堵住 {@code apoc.load.json} 的 SSRF 与
+     *       {@code apoc.cypher.run} 的动态执行绕过）；</li>
+     *   <li>{@code session.executeRead(...)} 走读事务，即便静态检查被绕过，集群也会把语句
+     *       路由到 follower 并拒绝写入。</li>
+     * </ol>
+     *
+     * <p>拦截原因会原样回给模型（而不是笼统的「不允许」），这样它能据此改写成合法查询。</p>
      */
     public Mono<String> runReadOnly(String cypher) {
-        if (WRITE_OP.matcher(cypher).find()) {
-            return Mono.just("出于安全考虑，仅允许只读 Cypher（已拦截写操作）。");
+        CypherGuard.Verdict verdict = guard.check(cypher);
+        if (!verdict.allowed()) {
+            return Mono.just("Cypher 被只读守卫拦截：" + verdict.reason()
+                    + "。请改写成单条 MATCH ... RETURN ... 查询后重试。");
         }
         return Mono.fromCallable(() -> {
                     try (Session s = driver.session()) {
-                        Result r = s.run(cypher);
-                        StringBuilder sb = new StringBuilder();
-                        int rows = 0;
-                        while (r.hasNext() && rows < 50) {
-                            var rec = r.next();
-                            sb.append(rec.asMap(v -> v.asObject()).toString()).append("\n");
-                            rows++;
-                        }
-                        return rows == 0 ? "查询无结果。" : sb.toString();
+                        // executeRead：读事务（AccessMode.READ），第二道防线
+                        return s.executeRead(tx -> {
+                            Result r = tx.run(cypher);
+                            StringBuilder sb = new StringBuilder();
+                            int rows = 0;
+                            while (r.hasNext() && rows < maxRows) {
+                                var rec = r.next();
+                                sb.append(rec.asMap(v -> v.asObject()).toString()).append("\n");
+                                rows++;
+                            }
+                            if (rows == 0) {
+                                return "查询无结果。";
+                            }
+                            if (rows >= maxRows) {
+                                sb.append("（结果已达上限 ").append(maxRows).append(" 行，已截断）\n");
+                            }
+                            return sb.toString();
+                        });
                     }
                 })
-                .subscribeOn(Schedulers.boundedElastic());
+                .subscribeOn(Schedulers.boundedElastic())
+                // 数据库报错也要回给模型看（它才知道是语法错还是属性不存在），但不能把长堆栈塞进上下文
+                .onErrorResume(e -> {
+                    log.debug("[Neo4j] 只读 Cypher 执行失败：{}", e.toString());
+                    return Mono.just("Cypher 执行失败：" + brief(e) + "。请修正后重试。");
+                });
+    }
+
+    /** 只取错误信息的首行并截断，避免把驱动堆栈写进模型上下文。 */
+    private static String brief(Throwable e) {
+        String msg = e.getMessage() == null ? e.getClass().getSimpleName() : e.getMessage();
+        msg = msg.replaceAll("\\s+", " ").trim();
+        return msg.length() > 240 ? msg.substring(0, 240) + "..." : msg;
     }
 }
