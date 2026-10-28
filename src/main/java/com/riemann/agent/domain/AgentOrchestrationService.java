@@ -2,6 +2,8 @@ package com.riemann.agent.domain;
 
 import reactor.core.publisher.Flux;
 
+import java.util.Map;
+
 /**
  * 领域服务：Agent 编排服务（纯接口，不依赖 Spring）。
  * 负责驱动推理循环并以响应式事件流返回过程。
@@ -19,6 +21,21 @@ public interface AgentOrchestrationService {
      * @return 领域事件流（Thinking / ToolCalling / ToolResult / Token / Completed）
      */
     Flux<AgentEvent> converse(Conversation conversation, String userInput);
+
+    /**
+     * 带附加属性的对话：用于把「非对话内容」的请求级信息透传进 {@code RuntimeContext}。
+     *
+     * <p>当前唯一的使用者是 A2A 协作：入站请求带着 {@code metadata.delegationDepth}，
+     * 需要一路传到出站委托工具，否则「最大委托跳数」永远读到 0、无法阻止 A→B→A 的循环委托。</p>
+     *
+     * <p>默认实现忽略属性、退化为两参版本，因此已有实现与调用方无需改动即可继续工作。</p>
+     *
+     * @param attributes 请求级属性（约定键：{@code delegationDepth}）
+     */
+    default Flux<AgentEvent> converse(Conversation conversation, String userInput,
+                                      Map<String, Object> attributes) {
+        return converse(conversation, userInput);
+    }
 
     /**
      * 请求停止某会话当前正在执行的那一轮。

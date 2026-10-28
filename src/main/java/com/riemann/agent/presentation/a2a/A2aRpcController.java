@@ -5,6 +5,7 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.riemann.agent.application.ConversationAppService;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.ConversationId;
+import com.riemann.agent.infrastructure.a2a.A2aClientProperties;
 import com.riemann.agent.presentation.a2a.protocol.Artifact;
 import com.riemann.agent.presentation.a2a.protocol.JsonRpcError;
 import com.riemann.agent.presentation.a2a.protocol.JsonRpcRequest;
@@ -22,6 +23,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -47,20 +49,29 @@ import java.util.concurrent.atomic.AtomicReference;
 @RestController
 public class A2aRpcController {
 
+    /** 调用方标识请求头：对端委托时由 {@code A2aClient} 写入，用于把不同调用方隔离到各自的配额桶。 */
+    private static final String AGENT_ID_HEADER = "X-Agent-Id";
+    /** 没有任何身份信息时的兜底 userId（所有匿名调用共享一个桶，仅用于本地调试）。 */
+    private static final String ANONYMOUS_USER = "a2a-anonymous";
+
     private final ConversationAppService appService;
     private final A2aTaskStore taskStore;
     private final ObjectMapper objectMapper;
+    private final A2aClientProperties clientProperties;
 
-    public A2aRpcController(ConversationAppService appService, A2aTaskStore taskStore, ObjectMapper objectMapper) {
+    public A2aRpcController(ConversationAppService appService, A2aTaskStore taskStore,
+                            ObjectMapper objectMapper, A2aClientProperties clientProperties) {
         this.appService = appService;
         this.taskStore = taskStore;
         this.objectMapper = objectMapper;
+        this.clientProperties = clientProperties;
     }
 
     // ===================== 普通 JSON 端点 =====================
 
     @PostMapping(value = "/a2a", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.APPLICATION_JSON_VALUE)
-    public Mono<ResponseEntity<String>> handleJson(@RequestBody String body) {
+    public Mono<ResponseEntity<String>> handleJson(@RequestBody String body,
+                                                   @RequestHeader(value = AGENT_ID_HEADER, required = false) String agentId) {
         JsonRpcRequest req = parseRequest(body);
         if (req == null) {
             return Mono.just(ResponseEntity.ok(json(JsonRpcResponse.error(null, JsonRpcError.of(JsonRpcError.PARSE_ERROR, "Parse error")))));
@@ -69,7 +80,7 @@ public class A2aRpcController {
             return Mono.just(errorJson(req.id(), JsonRpcError.INVALID_REQUEST, "Missing method"));
         }
         return switch (req.method()) {
-            case "message/send" -> messageSend(req);
+            case "message/send" -> messageSend(req, agentId);
             case "tasks/get" -> tasksGet(req);
             case "tasks/cancel" -> tasksCancel(req);
             case "message/stream" -> Mono.just(errorJson(req.id(), JsonRpcError.INVALID_REQUEST,
@@ -81,7 +92,8 @@ public class A2aRpcController {
     // ===================== SSE 流式端点 =====================
 
     @PostMapping(value = "/a2a", consumes = MediaType.APPLICATION_JSON_VALUE, produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    public Flux<ServerSentEvent<String>> handleStream(@RequestBody String body) {
+    public Flux<ServerSentEvent<String>> handleStream(@RequestBody String body,
+                                                      @RequestHeader(value = AGENT_ID_HEADER, required = false) String agentId) {
         JsonRpcRequest req = parseRequest(body);
         if (req == null) {
             return Flux.just(errorSse(null, JsonRpcError.PARSE_ERROR, "Parse error"));
@@ -90,17 +102,20 @@ public class A2aRpcController {
             return Flux.just(errorSse(req.id(), JsonRpcError.INVALID_REQUEST,
                     "Use Accept: application/json for " + req.method()));
         }
-        return messageStream(req);
+        return messageStream(req, agentId);
     }
 
     // ===================== message/send =====================
 
-    private Mono<ResponseEntity<String>> messageSend(JsonRpcRequest req) {
-        SendContext ctx = resolveContext(req);
+    private Mono<ResponseEntity<String>> messageSend(JsonRpcRequest req, String agentId) {
+        SendContext ctx = resolveContext(req, agentId);
         if (ctx == null) {
             return Mono.just(errorJson(req.id(), JsonRpcError.INVALID_PARAMS, "Missing params.message"));
         }
-        return appService.chat(ctx.userId(), ctx.text(), new ConversationId(ctx.conversationId()))
+        if (ctx.depth() > maxDepth()) {
+            return Mono.just(errorJson(req.id(), JsonRpcError.INVALID_PARAMS, depthMessage(ctx.depth())));
+        }
+        return appService.chat(ctx.userId(), ctx.text(), new ConversationId(ctx.conversationId()), ctx.attributes())
                 .collectList()
                 .map(events -> {
                     StringBuilder sb = new StringBuilder();
@@ -110,7 +125,8 @@ public class A2aRpcController {
                         }
                     }
                     Task task = buildCompletedTask(ctx.taskId(), ctx.contextId(), ctx.message(), sb.toString());
-                    taskStore.put(task);
+                    // 记录 conversationId：这样后续 tasks/cancel 才能定位到真正在跑的那一轮
+                    taskStore.put(task, ctx.conversationId());
                     return ResponseEntity.ok(json(JsonRpcResponse.success(req.id(), task)));
                 })
                 .onErrorResume(e -> Mono.just(errorJson(req.id(), JsonRpcError.INTERNAL_ERROR, e.getMessage())));
@@ -118,16 +134,20 @@ public class A2aRpcController {
 
     // ===================== message/stream =====================
 
-    private Flux<ServerSentEvent<String>> messageStream(JsonRpcRequest req) {
-        SendContext ctx = resolveContext(req);
+    private Flux<ServerSentEvent<String>> messageStream(JsonRpcRequest req, String agentId) {
+        SendContext ctx = resolveContext(req, agentId);
         if (ctx == null) {
             return Flux.just(errorSse(req.id(), JsonRpcError.INVALID_PARAMS, "Missing params.message"));
+        }
+        if (ctx.depth() > maxDepth()) {
+            return Flux.just(errorSse(req.id(), JsonRpcError.INVALID_PARAMS, depthMessage(ctx.depth())));
         }
         AtomicReference<StringBuilder> acc = new AtomicReference<>(new StringBuilder());
 
         TaskStatusUpdateEvent started = new TaskStatusUpdateEvent(ctx.contextId(), ctx.taskId(), TaskStatus.of(TaskState.working));
 
-        Flux<Object> a2aEvents = appService.chat(ctx.userId(), ctx.text(), new ConversationId(ctx.conversationId()))
+        Flux<Object> a2aEvents = appService.chat(ctx.userId(), ctx.text(),
+                        new ConversationId(ctx.conversationId()), ctx.attributes())
                 .concatMap(e -> {
                     if (e instanceof AgentEvent.Token t) {
                         acc.get().append(t.delta());
@@ -141,7 +161,8 @@ public class A2aRpcController {
                                 ctx.contextId(), ctx.taskId(),
                                 Artifact.text("artifact-0", full, 0, false, true));
                         TaskStatusUpdateEvent done = new TaskStatusUpdateEvent(ctx.contextId(), ctx.taskId(), TaskStatus.of(TaskState.completed));
-                        taskStore.put(buildCompletedTask(ctx.taskId(), ctx.contextId(), ctx.message(), full));
+                        taskStore.put(buildCompletedTask(ctx.taskId(), ctx.contextId(), ctx.message(), full),
+                                ctx.conversationId());
                         return Flux.just((Object) last, (Object) done);
                     }
                     return Mono.empty();
@@ -165,14 +186,26 @@ public class A2aRpcController {
                         JsonRpcError.of(JsonRpcError.INVALID_PARAMS, "Task not found: " + id)))));
     }
 
+    /**
+     * 取消任务 —— <b>真的取消</b>，不只是改状态。
+     *
+     * <p>改造前这里只把 taskStore 里的状态写成 {@code canceled}，而正在跑的那一轮完全不知情：
+     * Agent 的 ReAct 循环会继续把剩余迭代跑完，token 照烧，直到 {@code turn-timeout} 才收手。
+     * 现在通过任务关联的 conversationId 反查，调用 {@link ConversationAppService#cancelTurn}，
+     * 置位 AgentScope 的中断标志（下一次迭代开始处生效）。</p>
+     */
     private Mono<ResponseEntity<String>> tasksCancel(JsonRpcRequest req) {
         String id = req.params() != null && req.params().has("id") ? req.params().get("id").asText() : null;
         if (id == null) {
             return Mono.just(errorJson(req.id(), JsonRpcError.INVALID_PARAMS, "Missing params.id"));
         }
+        String conversationId = taskStore.conversationIdOf(id).orElse(null);
+        boolean interrupted = conversationId != null && appService.cancelTurn(conversationId);
+
         return Mono.justOrEmpty(taskStore.computeIfPresent(id, t -> new Task(
                         t.id(), t.contextId(), TaskStatus.of(TaskState.canceled),
-                        t.artifacts(), t.history(), t.metadata())))
+                        t.artifacts(), t.history(),
+                        Map.of("canceled", true, "interrupted", interrupted))))
                 .map(task -> ResponseEntity.ok(json(JsonRpcResponse.success(req.id(), task))))
                 .defaultIfEmpty(ResponseEntity.ok(json(JsonRpcResponse.error(req.id(),
                         JsonRpcError.of(JsonRpcError.INVALID_PARAMS, "Task not found: " + id)))));
@@ -180,8 +213,15 @@ public class A2aRpcController {
 
     // ===================== 辅助 =====================
 
-    /** 从 params 解析出 userId / 文本 / conversationId / taskId / 原始 Message。 */
-    private SendContext resolveContext(JsonRpcRequest req) {
+    /**
+     * 从 params 解析出 userId / 文本 / conversationId / taskId / 委托跳数。
+     *
+     * <p><b>调用方身份</b>：优先取 {@code X-Agent-Id} 请求头（对端委托时由 {@code A2aClient} 写入），
+     * 其次取 message.metadata.userId。改造前所有外部调用都落成同一个 {@code "a2a-user"}，
+     * 导致它们共享同一个「并发 2 / 日 50 万 token」的配额桶——一个对端打满，其余全部被拒。
+     * 现在按调用方分桶，并且能在日志/指标里区分是谁在调。</p>
+     */
+    private SendContext resolveContext(JsonRpcRequest req, String agentId) {
         if (req.params() == null || !req.params().has("message")) {
             return null;
         }
@@ -196,8 +236,41 @@ public class A2aRpcController {
             taskId = UUID.randomUUID().toString();
         }
         String conversationId = "a2a-" + (contextId != null ? contextId : taskId);
-        String userId = message.userIdOrDefault("a2a-user");
-        return new SendContext(userId, message.text(), conversationId, taskId, contextId, message);
+
+        String userId = resolveUserId(agentId, message);
+        int depth = resolveDepth(message);
+        return new SendContext(userId, message.text(), conversationId, taskId, contextId, message, depth);
+    }
+
+    /** 身份优先级：请求头 X-Agent-Id > message.metadata.userId > 匿名。 */
+    private static String resolveUserId(String agentId, Message message) {
+        if (agentId != null && !agentId.isBlank()) {
+            return "a2a:" + agentId;
+        }
+        String fromMessage = message.userIdOrDefault(null);
+        if (fromMessage != null && !fromMessage.isBlank()) {
+            return fromMessage.startsWith("a2a:") ? fromMessage : "a2a:" + fromMessage;
+        }
+        return ANONYMOUS_USER;
+    }
+
+    /** 委托跳数：来自 message.metadata.delegationDepth（缺省 0 = 外部直接调用）。 */
+    private static int resolveDepth(Message message) {
+        if (message.metadata() == null) {
+            return 0;
+        }
+        Object raw = message.metadata().get("delegationDepth");
+        if (raw instanceof Number n) {
+            return Math.max(0, n.intValue());
+        }
+        if (raw instanceof String s) {
+            try {
+                return Math.max(0, Integer.parseInt(s.trim()));
+            } catch (NumberFormatException ignored) {
+                return 0;
+            }
+        }
+        return 0;
     }
 
     private Message parseMessage(JsonNode node) {
@@ -252,7 +325,32 @@ public class A2aRpcController {
         return ServerSentEvent.<String>builder().data(json(JsonRpcResponse.error(id, JsonRpcError.of(code, msg)))).build();
     }
 
-    /** 一次 send/stream 请求解析出的上下文。 */
-    private record SendContext(String userId, String text, String conversationId, String taskId, String contextId, Message message) {
+    /**
+     * 一次 send/stream 请求解析出的上下文。
+     *
+     * @param depth 本次请求的委托跳数，用于拒绝过深的级联委托（A→B→C→…）
+     */
+    private record SendContext(String userId, String text, String conversationId, String taskId,
+                               String contextId, Message message, int depth) {
+
+        /**
+         * 透传给编排层的附加属性。
+         *
+         * <p>委托跳数必须一路传到 {@code RuntimeContext}，否则出站工具无法知道「自己是第几跳」，
+         * 深度限制就永远读到 0、形同虚设。</p>
+         */
+        Map<String, Object> attributes() {
+            return depth == 0 ? Map.of() : Map.of("delegationDepth", depth);
+        }
+    }
+
+    /** 允许的最大委托跳数（与出站侧共用同一配置，保证两端对「多深算太深」的判断一致）。 */
+    private int maxDepth() {
+        return Math.max(1, clientProperties.getMaxDelegationDepth());
+    }
+
+    private String depthMessage(int depth) {
+        return "委托层级过深（depth=" + depth + "，上限=" + maxDepth()
+                + "），已拒绝本次级联委托，避免智能体之间循环调用。";
     }
 }

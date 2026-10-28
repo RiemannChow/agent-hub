@@ -64,6 +64,7 @@ public class AuthenticationWebFilter implements WebFilter {
         // 以便 Nacos 服务发现拉取 Agent Card、以及 A2A 客户端直接调用 JSON-RPC，无需 UI 登录态。
         if (path.equals("/.well-known/agent.json")) return true;
         if (path.equals("/a2a/agents")) return true;
+        if (path.equals("/a2a/delegation")) return true;
         if (path.equals("/a2a")) return true;
         return false;
     }

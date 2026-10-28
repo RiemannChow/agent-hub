@@ -142,6 +142,41 @@ agent:
     # 容器/多实例部署时改为宿主 IP 或网关地址。
     public-url: ${AGENT_PUBLIC_URL:http://localhost:8080}
     version: "1.0.0"
+    # ---- 服务发现 ----
+    discovery:
+      # Nacos 快照刷新间隔（拉取所有实例的 Agent Card）
+      refresh-interval: ${AGENT_A2A_DISCOVERY_INTERVAL:15s}
+    # ---- 出站协作：把发现到的对端包装成模型可调用的工具 ----
+    # 关闭后行为退回改造前：能被人调、能看目录，但不会主动委托。
+    client:
+      enabled: ${AGENT_A2A_CLIENT_ENABLED:true}
+      # 工具名前缀：call_agent_<service-name>
+      tool-prefix: ${AGENT_A2A_TOOL_PREFIX:call_agent_}
+      # 最多注册多少个对端工具。对端多时不要贪多——工具 schema 越长，模型选错的概率越高。
+      max-peers: ${AGENT_A2A_MAX_PEERS:5}
+      # 单次委托超时（对端不可达时不至于拖住整轮）
+      timeout: ${AGENT_A2A_CLIENT_TIMEOUT:90s}
+      # 委托结果回填给模型的字符上限
+      max-result-chars: ${AGENT_A2A_MAX_RESULT_CHARS:4000}
+      # 最大委托跳数：A→B 是 1 跳。超过即拒绝，防止智能体之间循环调用。
+      max-delegation-depth: ${AGENT_A2A_MAX_DELEGATION_DEPTH:3}
+      # 只允许委托给这些对端（按 Agent Card 的 name 或 Nacos 服务名匹配）；留空表示不限制
+      # 环境变量用逗号分隔：AGENT_A2A_ALLOWLIST="电商数据分析助手,agent-hub-kg"
+      allowlist: ${AGENT_A2A_ALLOWLIST:}
+    # ---- 任务存储（tasks/get / tasks/cancel）----
+    tasks:
+      ttl: ${AGENT_A2A_TASK_TTL:30m}
+      max-entries: ${AGENT_A2A_TASK_MAX_ENTRIES:2000}
+
+  # ============ AgentScope 原生能力开关（默认关，开启前请用评测确认收益） ============
+  # 这三项都会改变模型可见的工具集/提示词，属于会显著影响行为的改动。
+  native:
+    # 待办清单工具 + 任务提醒中间件：多步任务里显式维护「已做/待做」
+    task-list: ${AGENT_NATIVE_TASK_LIST:false}
+    # 元工具：让模型能自查/管理可用工具
+    meta-tool: ${AGENT_NATIVE_META_TOOL:false}
+    # 工具执行中被中断后的恢复（与「停止生成」配合；建议先在真实模型环境验证）
+    pending-tool-recovery: ${AGENT_NATIVE_PENDING_TOOL_RECOVERY:false}
 
 # ============ 可观测性：Actuator + Micrometer（指标 / 健康检查） ============
 # Langfuse 回答「这一次调用为什么慢」；Micrometer 回答「今天 P99 多少、工具失败率多少、

@@ -18,6 +18,7 @@ import reactor.core.publisher.Mono;
 import java.time.Instant;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -55,14 +56,26 @@ public class ConversationAppService {
      * @throws QuotaExceededException 并发超限或当日 token 预算用尽（由控制器转成 SSE error 帧）
      */
     public Flux<AgentEvent> chat(String userId, String userInput, ConversationId conversationId) {
+        return chat(userId, userInput, conversationId, Map.of());
+    }
+
+    /**
+     * 带请求级属性的对话（A2A 委托等场景使用）。
+     *
+     * <p>属性会一路透传到 {@code RuntimeContext}，让工具能读到「这次请求是第几跳委托」。</p>
+     */
+    public Flux<AgentEvent> chat(String userId, String userInput, ConversationId conversationId,
+                                 Map<String, Object> attributes) {
+        Map<String, Object> attrs = (attributes == null) ? Map.of() : attributes;
         return Flux.defer(() -> {
             quota.acquire(userId);
-            return doChat(userId, userInput, conversationId)
+            return doChat(userId, userInput, conversationId, attrs)
                     .doFinally(signal -> quota.release(userId));
         });
     }
 
-    private Flux<AgentEvent> doChat(String userId, String userInput, ConversationId conversationId) {
+    private Flux<AgentEvent> doChat(String userId, String userInput, ConversationId conversationId,
+                                    Map<String, Object> attributes) {
         Mono<Conversation> convMono = repository.findById(conversationId)
                 .switchIfEmpty(Mono.fromCallable(() -> createConversation(userId, conversationId)));
 
@@ -79,7 +92,7 @@ public class ConversationAppService {
             // 同一回合内消息时间戳严格递增，保证按 created_at 回放顺序稳定
             long[] seq = {System.currentTimeMillis()};
 
-            Flux<AgentEvent> events = orchestration.converse(withUser, userInput)
+            Flux<AgentEvent> events = orchestration.converse(withUser, userInput, attributes)
                     .doOnNext(ev -> {
                         if (ev instanceof AgentEvent.ToolCalling tc) {
                             captured.add(new Message.ToolCallMessage(

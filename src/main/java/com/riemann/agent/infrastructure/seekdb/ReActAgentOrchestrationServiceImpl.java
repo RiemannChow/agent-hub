@@ -26,6 +26,7 @@ import reactor.core.publisher.SignalType;
 
 import java.time.Instant;
 import java.util.List;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -75,6 +76,12 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
 
     @Override
     public Flux<AgentEvent> converse(Conversation conversation, String userInput) {
+        return converse(conversation, userInput, Map.of());
+    }
+
+    @Override
+    public Flux<AgentEvent> converse(Conversation conversation, String userInput,
+                                     Map<String, Object> attributes) {
         // 用 defer 包一层：登记「本轮在跑」必须发生在真正订阅时，而不是组装 Flux 时，
         // 否则一个从未被订阅的流也会留下一条永远不注销的登记。
         return Flux.defer(() -> {
@@ -98,8 +105,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
                     // 上下文组装：预算窗口（条数 + 字符）+ 被挤出部分的历史摘要。
                     // 见 ContextWindowAssembler —— 这里替代了原先「硬截断最近 8 条」的做法。
                     .flatMapMany(memoryCtx -> contextAssembler.assemble(conversation, memoryCtx, true)
-                            .flatMapMany(window ->
-                                    runTurn(conversationId, userId, sessionId, window.messages())))
+                            .flatMapMany(window -> runTurn(conversationId, userId, sessionId,
+                                    window.messages(), AgentCallContext.depthOf(attributes))))
                     .doFinally(signal -> {
                         turnRegistry.unregister(turn);
                         metrics.stopTurn(turnSample, AgentMetrics.outcomeOf(signal));
@@ -113,7 +120,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
     }
 
     /** 真正驱动 Agent 跑一轮：挂载运行时上下文 → 流式事件 → 整轮超时兜底。 */
-    private Flux<AgentEvent> runTurn(String conversationId, String userId, String sessionId, List<Msg> history) {
+    private Flux<AgentEvent> runTurn(String conversationId, String userId, String sessionId,
+                                     List<Msg> history, int delegationDepth) {
         RuntimeContext rc = RuntimeContext.builder()
                 .sessionId(sessionId)
                 .userId(userId)
@@ -125,7 +133,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         // 并发安全：把本轮调用者上下文按请求挂到 RuntimeContext 上。
         // save_memory 等工具通过方法参数（不带 @ToolParam 的 AgentCallContext）按类型取用，
         // 不再依赖单例 Bean 上的可变字段，因此同用户多标签页并发不会写错 userId。
-        rc.put(AgentCallContext.class, new AgentCallContext(userId, conversationId));
+        // delegationDepth 一并带上：出站委托工具据此判断「还能不能继续往外委托」。
+        rc.put(AgentCallContext.class, new AgentCallContext(userId, conversationId, delegationDepth));
 
         // AgentScope Java 2.0：streamEvents(List<Msg>, RuntimeContext) 返回 Flux<AgentEvent>（框架事件）
         // 旁路计量：模型 token 用量 / 工具调用结果 / 每日配额累加，都不改变事件本身

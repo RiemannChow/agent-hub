@@ -12,6 +12,7 @@ import com.riemann.agent.infrastructure.execution.TurnTimeout;
 import com.riemann.agent.infrastructure.metrics.AgentMetrics;
 import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
 import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
+import com.riemann.agent.infrastructure.toolkit.tools.AgentCallContext;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.micrometer.core.instrument.Timer;
@@ -21,6 +22,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.SignalType;
 
 import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -71,6 +73,12 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
 
     @Override
     public Flux<AgentEvent> converse(Conversation conversation, String userInput) {
+        return converse(conversation, userInput, Map.of());
+    }
+
+    @Override
+    public Flux<AgentEvent> converse(Conversation conversation, String userInput,
+                                     Map<String, Object> attributes) {
         // defer：登记「本轮在跑」必须发生在真正订阅时，否则未被订阅的流会留下永不注销的登记
         return Flux.defer(() -> {
             String conversationId = conversation.id().value();
@@ -92,6 +100,9 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
                                 .build();
                         // 可观测性：sessionId 是每轮唯一的，Langfuse 的会话维度要用稳定的 conversation.id
                         rc.put(LangfuseSpanAttributes.RUNTIME_SESSION_ID, conversationId);
+                        // 调用者上下文（含委托跳数）：出站委托工具据此判断能否继续往外委托
+                        rc.put(AgentCallContext.class, new AgentCallContext(
+                                userId, conversationId, AgentCallContext.depthOf(attributes)));
                         // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
                         return TurnTimeout.apply(
                                         telemetry.instrument(reactAgent.streamEvents(window.messages(), rc), userId)
