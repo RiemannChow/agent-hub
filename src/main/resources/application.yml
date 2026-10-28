@@ -84,6 +84,29 @@ agent:
     public-url: ${AGENT_PUBLIC_URL:http://localhost:8080}
     version: "1.0.0"
 
+# ============ 可观测性：Langfuse（OpenTelemetry OTLP） ============
+# 开启后：AgentScope 的 agent / 模型调用 / 工具调用会以 OTel span 上报 Langfuse，
+#         在 Langfuse 中呈现为「一条 trace = 一轮对话」，可按 session、user 聚合。
+# 关闭（默认）时容器里不会装配任何 tracing 中间件，零额外开销。
+# 凭据获取：Langfuse 项目 Settings → API Keys（public key 以 pk-lf- 开头，secret key 以 sk-lf- 开头）。
+langfuse:
+  enabled: ${LANGFUSE_ENABLED:false}
+  public-key: ${LANGFUSE_PUBLIC_KEY:}
+  secret-key: ${LANGFUSE_SECRET_KEY:}
+  # 云端 EU：https://cloud.langfuse.com   US：https://us.cloud.langfuse.com   自托管：http://localhost:3000
+  host: ${LANGFUSE_HOST:https://cloud.langfuse.com}
+  # 留空则由 host 推导出 {host}/api/public/otel/v1/traces；需要走网关/Collector 时在此写完整地址
+  endpoint: ${LANGFUSE_OTEL_ENDPOINT:}
+  environment: ${LANGFUSE_ENVIRONMENT:local}
+  release: ${LANGFUSE_RELEASE:1.0.0}
+  service-name: agent-hub
+  # 是否上报 prompt / completion / 工具入参出参；含敏感数据的生产环境建议置为 false
+  capture-content: ${LANGFUSE_CAPTURE_CONTENT:true}
+  # 单条 input/output 的最大字符数，超出截断
+  max-payload-chars: 4000
+  export-timeout-millis: 10000
+  max-queue-size: 2048
+
 # ============ OceanBase 知识图谱问答（Neo4j 后端） ============
 ---
 spring:

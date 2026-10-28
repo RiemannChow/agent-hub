@@ -67,6 +67,11 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
                             .sessionId(conversation.id().value() + "-" + UUID.randomUUID())
                             .userId(conversation.userId())
                             .build();
+                    // 可观测性：把「稳定的会话 id」挂到 RuntimeContext 上。
+                    // 上面那个 sessionId 是每轮唯一的（用于隔离 Agent 内部状态），拿它当 Langfuse
+                    // session 会导致每轮一条独立会话；真正的会话维度要用 conversation.id。
+                    rc.put(com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes.RUNTIME_SESSION_ID,
+                            conversation.id().value());
                     // AgentScope Java 2.0：streamEvents(List<Msg>, RuntimeContext) 返回 Flux<AgentEvent>（框架事件）
                     Flux<io.agentscope.core.event.AgentEvent> upstream = reactAgent.streamEvents(history, rc)
                             // 流结束后清空当前用户，避免跨会话误写

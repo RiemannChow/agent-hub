@@ -20,6 +20,8 @@
     <properties>
         <java.version>21</java.version>
         <agentscope.version>2.0.3</agentscope.version>
+        <!-- 与 agentscope-core 传递依赖的 opentelemetry-api 版本保持一致，避免 api/sdk 版本错配 -->
+        <opentelemetry.version>1.61.0</opentelemetry.version>
     </properties>
 
     <dependencyManagement>
@@ -84,6 +86,20 @@
         <dependency>
             <groupId>io.projectreactor</groupId>
             <artifactId>reactor-core</artifactId>
+        </dependency>
+
+        <!-- ===== 可观测性：OpenTelemetry SDK + OTLP 导出（上报 Langfuse） =====
+             agentscope-core 只传递 opentelemetry-api（以及 reactor 上下文传播），
+             真正把 span 送出去还需要 SDK 与 OTLP/HTTP exporter。 -->
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-sdk</artifactId>
+            <version>${opentelemetry.version}</version>
+        </dependency>
+        <dependency>
+            <groupId>io.opentelemetry</groupId>
+            <artifactId>opentelemetry-exporter-otlp</artifactId>
+            <version>${opentelemetry.version}</version>
         </dependency>
 
         <!-- ===== Nacos 服务注册 / 发现（A2A 智能体服务发现依赖） ===== -->

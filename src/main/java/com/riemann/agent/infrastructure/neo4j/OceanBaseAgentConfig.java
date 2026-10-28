@@ -3,9 +3,11 @@ package com.riemann.agent.infrastructure.neo4j;
 import com.riemann.agent.application.AgentEventMapper;
 import com.riemann.agent.application.AgentPersonaProvider;
 import com.riemann.agent.domain.AgentPersona;
+import com.riemann.agent.infrastructure.observability.AgentScopeMiddlewareChain;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.tool.Toolkit;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
@@ -28,16 +30,20 @@ public class OceanBaseAgentConfig {
     @Bean
     public ReActAgent oceanBaseReactAgent(OceanBaseToolkit toolkit,
                                           AgentPersonaProvider personaProvider,
-                                          Model agentModel) {
+                                          Model agentModel,
+                                          ObjectProvider<AgentScopeMiddlewareChain> middlewareChain) {
         AgentPersona persona = personaProvider.getPersona();
         Toolkit agentToolkit = new Toolkit();
         agentToolkit.registerTool(toolkit);
-        return ReActAgent.builder()
+
+        ReActAgent.Builder builder = ReActAgent.builder()
                 .name("ob-react-agent")
                 .sysPrompt(persona.renderSystemPrompt())
                 .model(agentModel)
                 .toolkit(agentToolkit)
-                .maxIters(30)
-                .build();
+                .maxIters(30);
+        // 可观测性（Langfuse）：仅 langfuse.enabled=true 时容器里才有该链
+        middlewareChain.ifAvailable(chain -> chain.middlewares().forEach(builder::middleware));
+        return builder.build();
     }
 }

@@ -1,20 +1,17 @@
 package com.riemann.agent.infrastructure.config;
 
-import com.riemann.agent.application.AgentEventMapper;
-import com.riemann.agent.application.AgentPersonaProvider;
-import com.riemann.agent.application.MemoryService;
-import com.riemann.agent.domain.AgentPersona;
-import com.riemann.agent.infrastructure.seekdb.SeekDbConversationRepository;
-import com.riemann.agent.infrastructure.seekdb.books.HybridSearchService;
-import io.agentscope.core.ReActAgent;
-import io.agentscope.core.model.Model;
-import io.agentscope.core.tool.Toolkit;
-
-import org.springframework.beans.factory.annotation.Value;
+import org.springframework.beans.factory.ObjectProvider;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 import org.springframework.context.annotation.Profile;
 
+import io.agentscope.core.ReActAgent;
+import io.agentscope.core.model.Model;
+import io.agentscope.core.tool.Toolkit;
+
+import com.riemann.agent.application.AgentPersonaProvider;
+import com.riemann.agent.domain.AgentPersona;
+import com.riemann.agent.infrastructure.observability.AgentScopeMiddlewareChain;
 import com.riemann.agent.infrastructure.toolkit.tools.SaveMemoryTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekBookCountByYearTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekBookSearchTool;
@@ -43,7 +40,8 @@ public class AgentConfig {
                                  SeekSqlQueryTool seekSqlQueryTool,
                                  SeekBookSearchTool seekBookSearchTool,
                                  SeekBookCountByYearTool seekBookCountByYearTool,
-                                 SaveMemoryTool saveMemoryTool) {
+                                 SaveMemoryTool saveMemoryTool,
+                                 ObjectProvider<AgentScopeMiddlewareChain> middlewareChain) {
         AgentPersona persona = personaProvider.getPersona();
         // 把带有 @Tool 方法的 POJO 逐个注册进 AgentScope 的 Toolkit
         Toolkit agentToolkit = new Toolkit();
@@ -53,12 +51,15 @@ public class AgentConfig {
         agentToolkit.registerTool(seekBookSearchTool);
         agentToolkit.registerTool(seekBookCountByYearTool);
         agentToolkit.registerTool(saveMemoryTool);
-        return ReActAgent.builder()
+
+        ReActAgent.Builder builder = ReActAgent.builder()
                 .name("seek-react-agent")
                 .sysPrompt(persona.renderSystemPrompt())
                 .model(agentModel)
                 .toolkit(agentToolkit)
-                .maxIters(30)
-                .build();
+                .maxIters(30);
+        // 可观测性（Langfuse）：仅 langfuse.enabled=true 时容器里才有该链，否则保持零开销
+        middlewareChain.ifAvailable(chain -> chain.middlewares().forEach(builder::middleware));
+        return builder.build();
     }
 }

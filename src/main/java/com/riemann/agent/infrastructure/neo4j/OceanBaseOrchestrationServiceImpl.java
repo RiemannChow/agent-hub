@@ -5,6 +5,7 @@ import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
 import com.riemann.agent.domain.Conversation;
 import com.riemann.agent.domain.Message;
+import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.AssistantMessage;
@@ -51,6 +52,8 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
                 .sessionId(conversation.id().value() + "-" + UUID.randomUUID())
                 .userId(conversation.userId())
                 .build();
+        // 可观测性：sessionId 是每轮唯一的，Langfuse 的会话维度要用稳定的 conversation.id
+        rc.put(LangfuseSpanAttributes.RUNTIME_SESSION_ID, conversation.id().value());
         return reactAgent.streamEvents(history, rc)
                 .mapNotNull(mapper::toDomain)
                 .concatWithValues(new AgentEvent.Completed(conversation.id().value()));
