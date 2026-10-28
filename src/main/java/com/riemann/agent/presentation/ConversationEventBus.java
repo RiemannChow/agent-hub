@@ -47,4 +47,16 @@ public class ConversationEventBus {
         }
         return sink.asFlux();
     }
+
+    /**
+     * 注销某个 sink。
+     *
+     * <p>客户端中断（关标签页/点停止）时调用：只删掉「确实还是这个 sink」的那条记录，
+     * 避免把同会话新一轮刚注册的 sink 误删。</p>
+     */
+    public void remove(ConversationId id, Sinks.Many<AgentEvent> sink) {
+        if (sink != null) {
+            sinks.remove(id.value(), sink);
+        }
+    }
 }

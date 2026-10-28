@@ -19,4 +19,15 @@ public interface AgentOrchestrationService {
      * @return 领域事件流（Thinking / ToolCalling / ToolResult / Token / Completed）
      */
     Flux<AgentEvent> converse(Conversation conversation, String userInput);
+
+    /**
+     * 请求停止某会话当前正在执行的那一轮。
+     *
+     * <p>语义是「不再继续下一轮推理」，而不是「立刻掐断正在返回的这次模型调用」：
+     * 已经发出的模型/工具调用会自然返回，之后循环不再继续。</p>
+     *
+     * @param conversationId 会话标识
+     * @return true 表示确实中断了一个在跑的轮次；false 表示当前没有可中断的轮次
+     */
+    boolean cancel(String conversationId);
 }

@@ -1,5 +1,7 @@
 package com.riemann.agent.application;
 
+import com.riemann.agent.application.quota.AgentQuotaService;
+import com.riemann.agent.application.quota.QuotaExceededException;
 import com.riemann.agent.domain.*;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
@@ -29,21 +31,38 @@ public class ConversationAppService {
     private final AgentOrchestrationService orchestration;
     private final MemoryExtractor memoryExtractor;
     private final MemoryService memoryService;
+    private final AgentQuotaService quota;
 
     public ConversationAppService(ConversationRepository repository,
                                   AgentOrchestrationService orchestration,
                                   MemoryExtractor memoryExtractor,
-                                  MemoryService memoryService) {
+                                  MemoryService memoryService,
+                                  AgentQuotaService quota) {
         this.repository = repository;
         this.orchestration = orchestration;
         this.memoryExtractor = memoryExtractor;
         this.memoryService = memoryService;
+        this.quota = quota;
     }
 
     /**
      * 处理一次对话。若会话不存在则新建。
+     *
+     * <p>进入真正的编排之前先过配额：并发名额在 {@code defer} 里占用，
+     * 在事件流终止（正常结束 / 异常 / 客户端取消）时通过 {@code doFinally} 归还，
+     * 保证三条终止路径都不会把许可漏掉。</p>
+     *
+     * @throws QuotaExceededException 并发超限或当日 token 预算用尽（由控制器转成 SSE error 帧）
      */
     public Flux<AgentEvent> chat(String userId, String userInput, ConversationId conversationId) {
+        return Flux.defer(() -> {
+            quota.acquire(userId);
+            return doChat(userId, userInput, conversationId)
+                    .doFinally(signal -> quota.release(userId));
+        });
+    }
+
+    private Flux<AgentEvent> doChat(String userId, String userInput, ConversationId conversationId) {
         Mono<Conversation> convMono = repository.findById(conversationId)
                 .switchIfEmpty(Mono.fromCallable(() -> createConversation(userId, conversationId)));
 
@@ -109,6 +128,18 @@ public class ConversationAppService {
     /** 便捷方法：为未指定会话的场景生成新会话标识。 */
     public ConversationId newConversationId() {
         return new ConversationId(UUID.randomUUID().toString());
+    }
+
+    /**
+     * 请求停止某会话当前正在执行的一轮。
+     *
+     * <p>只负责转发到编排层（那里才知道 agent 与 (userId, sessionId) 的对应关系）；
+     * 真正的中断标志由 AgentScope 在 ReAct 循环的下一轮迭代处检查并生效。</p>
+     *
+     * @return true 表示确实中断了一个在跑的轮次
+     */
+    public boolean cancelTurn(String conversationId) {
+        return orchestration.cancel(conversationId);
     }
 
     // ===================== 历史记录查询（侧边栏用） =====================

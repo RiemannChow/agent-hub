@@ -5,6 +5,8 @@ import com.riemann.agent.domain.MemoryRepository;
 import com.riemann.agent.domain.ScoredMemory;
 import com.riemann.agent.infrastructure.seekdb.LocalEmbedder;
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Mono;
 
@@ -29,6 +31,8 @@ import java.util.UUID;
 @Service
 public class MemoryService {
 
+    private static final Logger log = LoggerFactory.getLogger(MemoryService.class);
+
     /** 每轮语义召回的近期记忆条数上限。 */
     private static final int RECALL_TOP_K = 5;
     /** 语义召回的距离上限（L2，归一化向量下约 0~1.41）；超出视为不相关。 */
@@ -44,10 +48,20 @@ public class MemoryService {
         this.repository = repository;
     }
 
-    /** 升级兼容：为历史遗留的 NULL embedding 记忆补算向量。 */
+    /**
+     * 升级兼容：为历史遗留的 NULL embedding 记忆补算向量。
+     *
+     * <p><b>为什么必须显式处理错误：</b>这里是无订阅者的「发射后不管」，
+     * 一旦 DB 未就绪（本地没起 SeekDB、或启动时库还在初始化），裸 {@code subscribe()} 会把异常
+     * 交给 Reactor 的默认钩子，打出 {@code ErrorCallbackNotImplemented} 并在部分场景下直接终止进程。
+     * 回填只是升级兼容动作，失败绝不该影响启动，因此这里收敛为一条 warn。</p>
+     */
     @PostConstruct
     public void backfill() {
-        repository.backfillNullEmbeddings().subscribe();
+        repository.backfillNullEmbeddings()
+                .doOnError(e -> log.warn("为历史记忆补算向量失败，跳过本次回填：{}", e.toString()))
+                .onErrorResume(e -> Mono.empty())
+                .subscribe();
     }
 
     /**

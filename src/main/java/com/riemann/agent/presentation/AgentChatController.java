@@ -1,15 +1,21 @@
 package com.riemann.agent.presentation;
 
 import com.riemann.agent.application.ConversationAppService;
+import com.riemann.agent.application.quota.QuotaExceededException;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.ConversationId;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.*;
+import reactor.core.Disposable;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 import reactor.core.publisher.Sinks;
 
+import java.util.Map;
 import java.util.UUID;
 
 /**
@@ -21,6 +27,8 @@ import java.util.UUID;
 @RestController
 @RequestMapping("/api/agent")
 public class AgentChatController {
+
+    private static final Logger log = LoggerFactory.getLogger(AgentChatController.class);
 
     private final ConversationAppService appService;
     private final ConversationEventBus eventBus;
@@ -39,22 +47,71 @@ public class AgentChatController {
         // POST 与 GET 订阅者共享同一个多播 Sink
         Sinks.Many<AgentEvent> sink = eventBus.register(id);
         Flux<AgentEvent> events = appService.chat(request.userId(), request.message(), id);
-        events.subscribe(sink::tryEmitNext, sink::tryEmitError, sink::tryEmitComplete);
+        // 关键：保留上游订阅句柄。之前只 subscribe 不持有 Disposable，客户端断开时
+        // 被取消的只是 sink 的下游，上游仍在跑——Agent 的 ReAct 循环会继续烧 token。
+        Disposable upstream = events.subscribe(sink::tryEmitNext, sink::tryEmitError, sink::tryEmitComplete);
 
         return sink.asFlux()
                 .map(this::toSse)
-                // 任何下游异常（如持久化失败）都包成一条 error 事件帧下发，
+                // 任何下游异常（如持久化失败、配额超限）都包成一条 error 事件帧下发，
                 // 避免“响应已提交后抛 UnsupportedOperationException”导致客户端收到一条死流、无任何提示。
-                // 这里下发结构化 JSON（{"message","type"}），前端 chat.html 会解析并展示具体错误。
+                // 这里下发结构化 JSON（{"message","type","code"}），前端 chat.html 会解析并展示具体错误。
                 .onErrorResume(e -> {
                     String msg = e.getMessage() != null ? e.getMessage() : e.getClass().getSimpleName();
-                    String json = "{\"message\":" + escapeJson(msg)
-                            + ",\"type\":" + escapeJson(e.getClass().getSimpleName()) + "}";
+                    String code = errorCode(e);
+                    StringBuilder json = new StringBuilder("{\"message\":").append(escapeJson(msg))
+                            .append(",\"type\":").append(escapeJson(e.getClass().getSimpleName()));
+                    if (code != null) {
+                        json.append(",\"code\":").append(escapeJson(code));
+                    }
+                    json.append('}');
+                    if (e instanceof QuotaExceededException quota) {
+                        log.warn("会话 {} 被配额拦截：{}", id.value(), quota.kind());
+                    }
                     @SuppressWarnings("unchecked")
                     ServerSentEvent<AgentEvent> errEvent = (ServerSentEvent<AgentEvent>) (Object)
-                            ServerSentEvent.builder().event("error").data(json).build();
+                            ServerSentEvent.builder().event("error").data(json.toString()).build();
                     return Flux.just(errEvent);
+                })
+                // 客户端断开（关标签页/网关超时/前端点停止后 abort）→ CANCEL：
+                // 1) dispose 上游，停止继续向 sink 灌事件；
+                // 2) 通知编排层中断本轮，让 Agent 不再发起下一轮推理；
+                // 3) 清理该会话的 sink，避免内存泄漏。
+                .doFinally(signal -> {
+                    if (signal == SignalType.CANCEL) {
+                        upstream.dispose();
+                        boolean cancelled = appService.cancelTurn(id.value());
+                        eventBus.remove(id, sink);
+                        log.info("客户端断开，已取消会话 {} 的当前轮次（interrupted={}）", id.value(), cancelled);
+                    }
                 });
+    }
+
+    /**
+     * 主动停止某会话当前正在生成的一轮（前端「停止生成」按钮）。
+     *
+     * <p>只置位中断标志，不 dispose 流——这样客户端仍能收到本轮已有的输出与结束事件，
+     * 体验上是「停下来」而不是「连接被掐断」。</p>
+     */
+    @PostMapping("/chat/{conversationId}/stop")
+    public Mono<Map<String, Object>> stop(@PathVariable String conversationId) {
+        boolean cancelled = appService.cancelTurn(conversationId);
+        return Mono.just(Map.of(
+                "conversationId", conversationId,
+                "cancelled", cancelled,
+                "note", cancelled ? "已请求中断，当前这次模型/工具调用返回后即停止"
+                        : "该会话当前没有正在生成的轮次"));
+    }
+
+    /** 把领域异常翻译成前端可判别的错误码（前端据此决定是提示「稍后再试」还是「明天再来」）。 */
+    private static String errorCode(Throwable e) {
+        if (e instanceof QuotaExceededException quota) {
+            return switch (quota.kind()) {
+                case CONCURRENCY -> "quota_concurrency";
+                case DAILY_TOKENS -> "quota_daily_tokens";
+            };
+        }
+        return null;
     }
 
     /** 最小化的 JSON 字符串转义，仅用于 error 事件帧的 data 字段。 */

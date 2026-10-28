@@ -4,21 +4,23 @@ import com.riemann.agent.application.AgentEventMapper;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
 import com.riemann.agent.domain.Conversation;
-import com.riemann.agent.domain.Message;
+import com.riemann.agent.infrastructure.context.ContextWindowAssembler;
+import com.riemann.agent.infrastructure.execution.ActiveTurnRegistry;
 import com.riemann.agent.infrastructure.execution.AgentExecutionProperties;
+import com.riemann.agent.infrastructure.execution.TurnCancellationService;
 import com.riemann.agent.infrastructure.execution.TurnTimeout;
+import com.riemann.agent.infrastructure.metrics.AgentMetrics;
+import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
 import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
-import io.agentscope.core.message.AssistantMessage;
-import io.agentscope.core.message.Msg;
-import io.agentscope.core.message.UserMessage;
+import io.micrometer.core.instrument.Timer;
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.SignalType;
 
-import java.util.ArrayList;
-import java.util.List;
+import java.time.Instant;
 import java.util.UUID;
 
 /**
@@ -36,53 +38,80 @@ import java.util.UUID;
 @Profile("oceanbase")
 public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationService {
 
-    /** 注入模型的短期历史窗口大小（不含工具内部消息）。 */
-    private static final int MAX_HISTORY = 8;
-
     private final ReActAgent reactAgent;
     private final AgentEventMapper mapper;
     private final AgentExecutionProperties executionProperties;
+    private final ActiveTurnRegistry turnRegistry;
+    private final TurnCancellationService cancellationService;
+    private final TurnTelemetry telemetry;
+    private final AgentMetrics metrics;
+    private final ContextWindowAssembler contextAssembler;
 
     public OceanBaseOrchestrationServiceImpl(ReActAgent reactAgent, AgentEventMapper mapper,
-                                             AgentExecutionProperties executionProperties) {
+                                             AgentExecutionProperties executionProperties,
+                                             ActiveTurnRegistry turnRegistry,
+                                             TurnCancellationService cancellationService,
+                                             TurnTelemetry telemetry,
+                                             AgentMetrics metrics,
+                                             ContextWindowAssembler contextAssembler) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.executionProperties = executionProperties;
+        this.turnRegistry = turnRegistry;
+        this.cancellationService = cancellationService;
+        this.telemetry = telemetry;
+        this.metrics = metrics;
+        this.contextAssembler = contextAssembler;
+    }
+
+    @Override
+    public boolean cancel(String conversationId) {
+        return cancellationService.cancel(conversationId);
     }
 
     @Override
     public Flux<AgentEvent> converse(Conversation conversation, String userInput) {
-        List<Msg> history = buildHistory(conversation);
-        RuntimeContext rc = RuntimeContext.builder()
-                .sessionId(conversation.id().value() + "-" + UUID.randomUUID())
-                .userId(conversation.userId())
-                .build();
-        // 可观测性：sessionId 是每轮唯一的，Langfuse 的会话维度要用稳定的 conversation.id
-        rc.put(LangfuseSpanAttributes.RUNTIME_SESSION_ID, conversation.id().value());
-        // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
-        return TurnTimeout.apply(reactAgent.streamEvents(history, rc).mapNotNull(mapper::toDomain),
-                        executionProperties.getTurnTimeout())
-                .concatWithValues(new AgentEvent.Completed(conversation.id().value()));
+        // defer：登记「本轮在跑」必须发生在真正订阅时，否则未被订阅的流会留下永不注销的登记
+        return Flux.defer(() -> {
+            String conversationId = conversation.id().value();
+            String userId = conversation.userId();
+            // sessionId 每轮唯一：既隔离 Agent 内部状态，也是停止接口定位本轮的凭据
+            String sessionId = conversationId + "-" + UUID.randomUUID();
+            ActiveTurnRegistry.ActiveTurn turn =
+                    new ActiveTurnRegistry.ActiveTurn(conversationId, userId, sessionId, Instant.now());
+            turnRegistry.register(turn);
+            Timer.Sample turnSample = metrics.startTurn();
+
+            // 上下文组装：预算窗口 + 溢出部分摘要（与 seekdb 版共用同一实现）。
+            // 本 profile 不注入长期记忆，也不注入反锚定说明——纯知识问答不涉及“旧过滤条件被复用”的问题。
+            return contextAssembler.assemble(conversation, "", false)
+                    .flatMapMany(window -> {
+                        RuntimeContext rc = RuntimeContext.builder()
+                                .sessionId(sessionId)
+                                .userId(userId)
+                                .build();
+                        // 可观测性：sessionId 是每轮唯一的，Langfuse 的会话维度要用稳定的 conversation.id
+                        rc.put(LangfuseSpanAttributes.RUNTIME_SESSION_ID, conversationId);
+                        // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
+                        return TurnTimeout.apply(
+                                        telemetry.instrument(reactAgent.streamEvents(window.messages(), rc), userId)
+                                                .mapNotNull(mapper::toDomain),
+                                        executionProperties.getTurnTimeout())
+                                .concatWithValues(new AgentEvent.Completed(conversationId));
+                    })
+                    .doFinally(signal -> {
+                        turnRegistry.unregister(turn);
+                        metrics.stopTurn(turnSample, AgentMetrics.outcomeOf(signal));
+                        if (signal == SignalType.CANCEL) {
+                            // 下游取消（客户端断开）时显式中断，避免循环继续烧 token
+                            reactAgent.interrupt(userId, sessionId);
+                        }
+                    });
+        });
     }
 
     /**
-     * 取当前用户消息之前最近 {@value #MAX_HISTORY} 条 用户/助手 消息作为上下文窗口，
-     * 跳过工具调用/结果等内部消息（AgentScope 已在其事件流中呈现，无需再喂给模型）。
+     * 历史上下文的组装已抽到 {@link ContextWindowAssembler}（预算窗口 + 滚动摘要），
+     * 原先这里同样是 {@code MAX_HISTORY = 8} 的硬截断。
      */
-    private List<Msg> buildHistory(Conversation conversation) {
-        List<Msg> history = new ArrayList<>();
-        List<Message> msgs = conversation.messages();
-        int count = 0;
-        for (int i = msgs.size() - 1; i >= 0 && count < MAX_HISTORY; i--) {
-            Message m = msgs.get(i);
-            if (m instanceof Message.UserMessage um) {
-                history.add(0, new UserMessage(um.content()));
-                count++;
-            } else if (m instanceof Message.AssistantMessage am) {
-                history.add(0, new AssistantMessage(am.content()));
-                count++;
-            }
-        }
-        return history;
-    }
 }

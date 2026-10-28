@@ -5,20 +5,26 @@ import com.riemann.agent.application.MemoryService;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
 import com.riemann.agent.domain.Conversation;
-import com.riemann.agent.domain.Message;
+import com.riemann.agent.infrastructure.context.ContextWindowAssembler;
+import com.riemann.agent.infrastructure.execution.ActiveTurnRegistry;
 import com.riemann.agent.infrastructure.execution.AgentExecutionProperties;
+import com.riemann.agent.infrastructure.execution.TurnCancellationService;
 import com.riemann.agent.infrastructure.execution.TurnTimeout;
+import com.riemann.agent.infrastructure.metrics.AgentMetrics;
+import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
+import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
 import com.riemann.agent.infrastructure.toolkit.tools.AgentCallContext;
 import io.agentscope.core.ReActAgent;
-import io.agentscope.core.message.AssistantMessage;
+import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
-import io.agentscope.core.message.UserMessage;
+import io.micrometer.core.instrument.Timer;
 
 import org.springframework.context.annotation.Profile;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
+import reactor.core.publisher.SignalType;
 
-import java.util.ArrayList;
+import java.time.Instant;
 import java.util.List;
 import java.util.UUID;
 
@@ -37,106 +43,109 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
     private final AgentEventMapper mapper;
     private final MemoryService memoryService;
     private final AgentExecutionProperties executionProperties;
+    private final ActiveTurnRegistry turnRegistry;
+    private final TurnCancellationService cancellationService;
+    private final TurnTelemetry telemetry;
+    private final AgentMetrics metrics;
+    private final ContextWindowAssembler contextAssembler;
 
     public ReActAgentOrchestrationServiceImpl(ReActAgent reactAgent, AgentEventMapper mapper,
                                               MemoryService memoryService,
-                                              AgentExecutionProperties executionProperties) {
+                                              AgentExecutionProperties executionProperties,
+                                              ActiveTurnRegistry turnRegistry,
+                                              TurnCancellationService cancellationService,
+                                              TurnTelemetry telemetry,
+                                              AgentMetrics metrics,
+                                              ContextWindowAssembler contextAssembler) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.memoryService = memoryService;
         this.executionProperties = executionProperties;
+        this.turnRegistry = turnRegistry;
+        this.cancellationService = cancellationService;
+        this.telemetry = telemetry;
+        this.metrics = metrics;
+        this.contextAssembler = contextAssembler;
+    }
+
+    @Override
+    public boolean cancel(String conversationId) {
+        return cancellationService.cancel(conversationId);
     }
 
     @Override
     public Flux<AgentEvent> converse(Conversation conversation, String userInput) {
-        // 召回该用户的长期记忆（最近 N 条），作为本轮上下文背景注入。
-        return memoryService.recall(conversation.userId(), userInput)
-                .flatMapMany(memoryCtx -> {
-                    // 用会话历史 + 召回的长期记忆重建 AgentScope 的 Msg 列表：
-                    // buildAgentStream 会自动把 sysPrompt 包成 SystemMessage 前置，因此这里只需按顺序塞入历史消息。
-                    List<Msg> history = rebuildHistory(conversation, memoryCtx);
-                    // 关键修复：AgentScope 的 ReActAgent 会按 sessionId 在内部 AgentState 里累积消息历史。
-                    // 若每次都用默认 sessionId，多轮调用会把历史越攒越多，模型锚定在最早的一条消息上
-                    // （如首轮“hi”），导致“同一连接后续回答都等于第一个回答”。这里每轮用唯一 sessionId，
-                    // 让 Agent 在单轮内（think→tool→think→answer）仍保留状态，但轮与轮之间互不污染——
-                    // 跨轮上下文改由领域层 rebuildHistory（当前消息 + 召回的长期记忆）注入。
-                    io.agentscope.core.agent.RuntimeContext rc = io.agentscope.core.agent.RuntimeContext.builder()
-                            .sessionId(conversation.id().value() + "-" + UUID.randomUUID())
-                            .userId(conversation.userId())
-                            .build();
-                    // 可观测性：把「稳定的会话 id」挂到 RuntimeContext 上。
-                    // 上面那个 sessionId 是每轮唯一的（用于隔离 Agent 内部状态），拿它当 Langfuse
-                    // session 会导致每轮一条独立会话；真正的会话维度要用 conversation.id。
-                    rc.put(com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes.RUNTIME_SESSION_ID,
-                            conversation.id().value());
-                    // 并发安全：把本轮调用者上下文按请求挂到 RuntimeContext 上。
-                    // save_memory 等工具通过方法参数（不带 @ToolParam 的 AgentCallContext）按类型取用，
-                    // 不再依赖单例 Bean 上的可变字段，因此同用户多标签页并发不会写错 userId。
-                    rc.put(AgentCallContext.class,
-                            new AgentCallContext(conversation.userId(), conversation.id().value()));
-                    // AgentScope Java 2.0：streamEvents(List<Msg>, RuntimeContext) 返回 Flux<AgentEvent>（框架事件）
-                    Flux<io.agentscope.core.event.AgentEvent> upstream = reactAgent.streamEvents(history, rc);
-                    // 注意：必须用 mapNotNull 而非 map().filter()。Reactor 的 map 不允许 mapper 返回 null，
-                    // 而 AgentEventMapper 对未映射的框架事件返回 null，会抛
-                    // “The mapper returned a null value” -> NullPointerException / UnsupportedOperationException。
-                    Flux<AgentEvent> domain = upstream.mapNotNull(mapper::toDomain);
-                    // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
-                    return TurnTimeout.apply(domain, executionProperties.getTurnTimeout())
-                            .concatWithValues(new AgentEvent.Completed(conversation.id().value()));
-                });
+        // 用 defer 包一层：登记「本轮在跑」必须发生在真正订阅时，而不是组装 Flux 时，
+        // 否则一个从未被订阅的流也会留下一条永远不注销的登记。
+        return Flux.defer(() -> {
+            String conversationId = conversation.id().value();
+            String userId = conversation.userId();
+            // 关键修复：AgentScope 的 ReActAgent 会按 sessionId 在内部 AgentState 里累积消息历史。
+            // 若每次都用默认 sessionId，多轮调用会把历史越攒越多，模型锚定在最早的一条消息上
+            // （如首轮“hi”），导致“同一连接后续回答都等于第一个回答”。这里每轮用唯一 sessionId，
+            // 让 Agent 在单轮内（think→tool→think→answer）仍保留状态，但轮与轮之间互不污染——
+            // 跨轮上下文改由 ContextWindowAssembler 注入（窗口 + 摘要 + 长期记忆）。
+            // 同时，这个 sessionId 也是停止接口定位本轮的唯一凭据（见 ActiveTurnRegistry）。
+            String sessionId = conversationId + "-" + UUID.randomUUID();
+            ActiveTurnRegistry.ActiveTurn turn =
+                    new ActiveTurnRegistry.ActiveTurn(conversationId, userId, sessionId, Instant.now());
+            turnRegistry.register(turn);
+            Timer.Sample turnSample = metrics.startTurn();
+
+            // 召回该用户的长期记忆（最近 N 条），作为本轮上下文背景注入。
+            return memoryService.recall(userId, userInput)
+                    .defaultIfEmpty("")
+                    // 上下文组装：预算窗口（条数 + 字符）+ 被挤出部分的历史摘要。
+                    // 见 ContextWindowAssembler —— 这里替代了原先「硬截断最近 8 条」的做法。
+                    .flatMapMany(memoryCtx -> contextAssembler.assemble(conversation, memoryCtx, true)
+                            .flatMapMany(window ->
+                                    runTurn(conversationId, userId, sessionId, window.messages())))
+                    .doFinally(signal -> {
+                        turnRegistry.unregister(turn);
+                        metrics.stopTurn(turnSample, AgentMetrics.outcomeOf(signal));
+                        if (signal == SignalType.CANCEL) {
+                            // 下游被取消（客户端断开 SSE / 网关超时）时显式中断本轮：
+                            // 否则 Agent 的 ReAct 循环会继续跑完剩余迭代，token 照烧而无人接收。
+                            reactAgent.interrupt(userId, sessionId);
+                        }
+                    });
+        });
+    }
+
+    /** 真正驱动 Agent 跑一轮：挂载运行时上下文 → 流式事件 → 整轮超时兜底。 */
+    private Flux<AgentEvent> runTurn(String conversationId, String userId, String sessionId, List<Msg> history) {
+        RuntimeContext rc = RuntimeContext.builder()
+                .sessionId(sessionId)
+                .userId(userId)
+                .build();
+        // 可观测性：把「稳定的会话 id」挂到 RuntimeContext 上。
+        // 上面那个 sessionId 是每轮唯一的（用于隔离 Agent 内部状态），拿它当 Langfuse
+        // session 会导致每轮一条独立会话；真正的会话维度要用 conversation.id。
+        rc.put(LangfuseSpanAttributes.RUNTIME_SESSION_ID, conversationId);
+        // 并发安全：把本轮调用者上下文按请求挂到 RuntimeContext 上。
+        // save_memory 等工具通过方法参数（不带 @ToolParam 的 AgentCallContext）按类型取用，
+        // 不再依赖单例 Bean 上的可变字段，因此同用户多标签页并发不会写错 userId。
+        rc.put(AgentCallContext.class, new AgentCallContext(userId, conversationId));
+
+        // AgentScope Java 2.0：streamEvents(List<Msg>, RuntimeContext) 返回 Flux<AgentEvent>（框架事件）
+        // 旁路计量：模型 token 用量 / 工具调用结果 / 每日配额累加，都不改变事件本身
+        Flux<io.agentscope.core.event.AgentEvent> upstream =
+                telemetry.instrument(reactAgent.streamEvents(history, rc), userId);
+        // 注意：必须用 mapNotNull 而非 map().filter()。Reactor 的 map 不允许 mapper 返回 null，
+        // 而 AgentEventMapper 对未映射的框架事件返回 null，会抛
+        // “The mapper returned a null value” -> NullPointerException / UnsupportedOperationException。
+        Flux<AgentEvent> domain = upstream.mapNotNull(mapper::toDomain);
+        // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
+        return TurnTimeout.apply(domain, executionProperties.getTurnTimeout())
+                .concatWithValues(new AgentEvent.Completed(conversationId));
     }
 
     /**
-     * 将领域消息列表转换为 AgentScope 的 Msg 列表，作为多轮对话上下文。
+     * 历史上下文的组装已抽到 {@link ContextWindowAssembler}：
+     * 「按条数 + 字符预算的最近窗口」+「被挤出部分的历史摘要」+「反锚定说明」+「召回的长期记忆」。
      *
-     * <h3>设计取舍：用“近期窗口 + 反锚定”替代“零历史”</h3>
-     * <p>早期版本每轮<b>只发最后一条用户消息</b>，彻底不回放历史，以此规避 Hunyuan 对“最早一条消息”的锚定
-     * （首轮问“科普书”，后续“评论数>=10000”仍被当成科普书的追问、复用旧答案）。但零历史让追问（“那本非虚构的呢？”
-     * “换成饼图”）丢失上下文、无法解析指代。</p>
-     * <p>本实现取<b>当前用户消息之前最近 {@value #MAX_HISTORY} 条</b>作为“短期记忆窗口”注入模型，再明确以
-     * 最后一条用户消息作为“本轮任务”。窗口有限且不含会话首条“hi”之类噪声，因此既恢复了多轮指代能力，
-     * 又不会让模型锚定到过远的旧主题。反锚定指令保留：明确告知模型“历史窗口可能已过期，必须以最后一条消息为准重新检索”。</p>
+     * <p>原先这里是 {@code MAX_HISTORY = 8} 的硬截断：窗口大小与 token 不成比例，
+     * 且被切掉的历史直接消失（用户早前说过的口径到第 9 轮就丢了）。
+     * 现在溢出部分会被滚动摘要进上下文，长会话不再只能丢历史。</p>
      */
-    private static final int MAX_HISTORY = 8;
-
-    private List<Msg> rebuildHistory(Conversation conversation, String memoryCtx) {
-        List<Message> msgs = conversation.messages();
-
-        // 1) 定位最后一条用户消息（= 本轮任务）
-        int lastUserIdx = -1;
-        for (int i = msgs.size() - 1; i >= 0; i--) {
-            if (msgs.get(i) instanceof Message.UserMessage) {
-                lastUserIdx = i;
-                break;
-            }
-        }
-        String current = lastUserIdx >= 0 ? ((Message.UserMessage) msgs.get(lastUserIdx)).content() : "";
-
-        // 2) 拼接反锚定指令 + 长期记忆块（固定前置）
-        StringBuilder prefix = new StringBuilder();
-        prefix.append("【上下文约束】下面先是“历史窗口”（仅作背景参考，其中的结论/过滤条件可能已过期），"
-                + "最后一条“【本轮用户消息】”才是你本轮真正要处理的请求。\n"
-                + "你必须依据【本轮用户消息】重新调用工具检索/问数，禁止把历史窗口里的旧结论、旧过滤条件"
-                + "（genre / 评分 / 价格 / 评论数等）直接当作本轮答案；若历史窗口与本轮消息冲突，一律以本轮消息为准。\n");
-        if (memoryCtx != null && !memoryCtx.isBlank()) {
-            prefix.append(memoryCtx).append("\n");
-        }
-
-        // 3) 历史窗口：当前用户消息之前的最近 MAX_HISTORY 条（跳过工具内部消息）
-        List<Msg> history = new ArrayList<>();
-        int windowStart = Math.max(0, lastUserIdx - MAX_HISTORY);
-        for (int i = windowStart; i < lastUserIdx; i++) {
-            Message m = msgs.get(i);
-            if (m instanceof Message.UserMessage um) {
-                history.add(new UserMessage(um.content()));
-            } else if (m instanceof Message.AssistantMessage am) {
-                history.add(new AssistantMessage(am.content()));
-            }
-            // ToolCall / ToolResult 为工具内部细节，不入模型上下文
-        }
-
-        // 4) 最后一条用户消息（带前缀）作为本轮任务，置于末尾
-        history.add(new UserMessage(prefix + "\n【本轮用户消息】\n" + current));
-        return history;
-    }
 }

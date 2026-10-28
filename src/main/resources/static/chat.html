@@ -204,6 +204,12 @@
             padding: 0 18px; height: 38px; font-size: 14px; font-weight: 600; cursor: pointer;
         }
         #send:disabled { opacity: .5; cursor: not-allowed; }
+        /* 生成中显示「停止」；与发送按钮同位置切换，避免布局跳动 */
+        #stop {
+            background: var(--err); color: #fff; border: none; border-radius: 10px;
+            padding: 0 18px; height: 38px; font-size: 14px; font-weight: 600; cursor: pointer;
+        }
+        #stop.hidden, #send.hidden { display: none; }
 
         /* ===== 分享弹窗 ===== */
         .modal { position: fixed; inset: 0; background: rgba(0,0,0,.55); display: grid; place-items: center; z-index: 50; }
@@ -417,6 +423,7 @@
                 <div class="composer">
                     <textarea id="input" rows="1" placeholder="给 agent-hub 发消息，例如：上月电商 GMV 是多少？"></textarea>
                     <button id="send">发送</button>
+                    <button id="stop" class="hidden">停止</button>
                 </div>
             </footer>
         </div>
@@ -450,6 +457,7 @@ const $ = (id) => document.getElementById(id);
 const messagesEl = $('messages');
 const inputEl = $('input');
 const sendBtn = $('send');
+const stopBtn = $('stop');
 const dotEl = $('dot');
 const statusEl = $('statusText');
 const historyEl = $('history');
@@ -458,6 +466,9 @@ const shareBtn = $('shareBtn');
 
 const USER_ID = 'web-user';
 let conversationId = '';
+// 当前正在读的 SSE reader；「停止」时用它断开本地读取
+let activeReader = null;
+let stopRequested = false;
 let busy = false;
 let currentMessages = [];   // 当前对话的消息快照，用于分享/导出
 
@@ -762,6 +773,9 @@ async function send() {
     const text = inputEl.value.trim();
     if (!text || busy) return;
     busy = true; sendBtn.disabled = true; setStatus('busy', '思考中…');
+    // 生成中把「发送」换成「停止」
+    sendBtn.classList.add('hidden'); stopBtn.classList.remove('hidden'); stopBtn.disabled = false;
+    stopRequested = false;
     addUserMessage(text); inputEl.value = ''; inputEl.style.height = 'auto';
 
     let agentBubble = null, thinkWrap = null, hadToken = false, lastTool = null, assistantIdx = -1;
@@ -773,6 +787,7 @@ async function send() {
         });
         if (!resp.ok) throw new Error('HTTP ' + resp.status);
         const reader = resp.body.getReader();
+        activeReader = reader;
         const decoder = new TextDecoder('utf-8');
         let buffer = '';
         while (true) {
@@ -818,18 +833,51 @@ async function send() {
                         setStatus('on', '已连接 · 会话 ' + (conversationId ? conversationId.slice(0,8) : ''));
                         break;
                     case 'error':
+                        // code 由后端下发（quota_concurrency / quota_daily_tokens），
+                        // message 本身已是「用户能看懂、知道该怎么办」的文案，直接展示即可。
                         addToolCard('错误', (obj.message || '未知错误') + ' (' + (obj.type || '') + ')', true);
-                        setStatus('err', '出错');
+                        setStatus('err', (obj.code || '').startsWith('quota') ? '配额受限' : '出错');
                         break;
                 }
             }
         }
     } catch (err) { addToolCard('连接错误', String(err), true); setStatus('err', '连接失败'); }
     finally {
-        if (!hadToken && !thinkWrap) { const b = newAgentMessage(); b.textContent = '（无内容返回）'; }
+        if (!hadToken && !thinkWrap) {
+            const b = newAgentMessage();
+            b.textContent = stopRequested ? '（已停止生成）' : '（无内容返回）';
+        }
         busy = false; sendBtn.disabled = false;
+        activeReader = null;
+        // 恢复按钮状态
+        sendBtn.classList.remove('hidden'); stopBtn.classList.add('hidden'); stopBtn.disabled = false;
+        if (stopRequested) { setStatus('on', '已停止'); stopRequested = false; }
         if (conversationId) loadHistory();
         if (!conversationId) setStatus('on', '已连接');
+    }
+}
+
+/**
+ * 停止生成。
+ *
+ * 两步都做：
+ *  1) 调 stop 接口显式通知后端中断本轮（置位 AgentScope 的 interrupt 标志）；
+ *  2) cancel 本地 reader，让 UI 立刻恢复可用。
+ * 即使第 1 步失败（例如首轮还没拿到 conversationId），第 2 步触发的断连也会让服务端
+ * 在 CANCEL 回调里中断本轮，不会出现「前端停了、后端还在烧 token」。
+ */
+async function stopGeneration() {
+    if (!busy || stopRequested) return;
+    stopRequested = true;
+    stopBtn.disabled = true;
+    setStatus('busy', '正在停止…');
+    if (conversationId) {
+        try {
+            await authFetch('/api/agent/chat/' + encodeURIComponent(conversationId) + '/stop', { method: 'POST' });
+        } catch (_) { /* 忽略：下面的 reader.cancel() 也会触发服务端断开取消 */ }
+    }
+    if (activeReader) {
+        try { await activeReader.cancel(); } catch (_) { /* 已关闭 */ }
     }
 }
 
@@ -1043,6 +1091,7 @@ $('copyLink').addEventListener('click', () => copyText($('shareUrl').value, '链
 
 // ===== 输入 / 发送 =====
 sendBtn.addEventListener('click', send);
+stopBtn.addEventListener('click', stopGeneration);
 inputEl.addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } });
 inputEl.addEventListener('input', () => { inputEl.style.height = 'auto'; inputEl.style.height = Math.min(inputEl.scrollHeight, 150) + 'px'; });
 $('newChat').addEventListener('click', newConversation);

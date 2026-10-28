@@ -113,6 +113,18 @@
             <version>${jsqlparser.version}</version>
         </dependency>
 
+        <!-- ===== 可观测性：Actuator + Micrometer（指标 / 健康检查） =====
+             Langfuse 解决「单次调用为什么慢」，这里解决「今天 P99 多少、工具失败率多少、
+             每个用户烧了多少 token」——后者需要聚合指标，而不是逐条 trace。 -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-actuator</artifactId>
+        </dependency>
+        <dependency>
+            <groupId>io.micrometer</groupId>
+            <artifactId>micrometer-registry-prometheus</artifactId>
+        </dependency>
+
         <!-- ===== Nacos 服务注册 / 发现（A2A 智能体服务发现依赖） ===== -->
         <dependency>
             <groupId>com.alibaba.cloud</groupId>

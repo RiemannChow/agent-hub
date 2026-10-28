@@ -107,6 +107,31 @@ agent:
     max-rows: ${AGENT_SQL_MAX_ROWS:200}
     query-timeout-seconds: ${AGENT_SQL_QUERY_TIMEOUT_SECONDS:10}
     max-length: 4000
+  # ============ 上下文窗口 / 历史摘要 ============
+  # 替代原先写死的 MAX_HISTORY=8 硬截断：窗口按「条数 + 字符预算」双重约束，
+  # 被挤出窗口的老历史走滚动摘要（带缓存、失败自动降级为「仅最近窗口」）。
+  # 详见 ContextWindowAssembler 的类注释。
+  context:
+    summarize-enabled: ${AGENT_CONTEXT_SUMMARIZE_ENABLED:true}
+    # 原样注入模型的最近历史条数（不含本轮用户消息）
+    recent-messages: ${AGENT_CONTEXT_RECENT_MESSAGES:8}
+    # 最近窗口的字符预算：防止一条超长消息（长表格/长贴文）挤爆上下文
+    recent-char-budget: ${AGENT_CONTEXT_RECENT_CHAR_BUDGET:6000}
+    # 溢出不足这么多条时直接丢弃，不值得为几条历史花一次模型调用
+    summary-trigger-messages: 4
+    # 距上次摘要新增不足这么多条时复用旧摘要，避免每轮都摘要
+    summary-min-new-messages: 4
+    summary-max-chars: 1200
+    summary-timeout: 20s
+    summary-cache-size: 512
+  # ============ 限流与配额（每用户） ============
+  # 并发名额：同一用户同时在跑的轮次上限，防止「开十个标签页把网关打到限流」。
+  # 每日 token：当日累计用量超限后直接拒绝新请求（自然日 0 点重置）。
+  # 注意：计数在进程内，多实例部署需换成 Redis 计数器（接口不变）。
+  quota:
+    enabled: ${AGENT_QUOTA_ENABLED:true}
+    max-concurrent-turns-per-user: ${AGENT_QUOTA_MAX_CONCURRENT:2}
+    daily-token-limit: ${AGENT_QUOTA_DAILY_TOKENS:500000}
   # ============ 图书混合检索（Java 版） ============
   books:
     # 数据集文件名（sql/ 目录或 classpath 均可），对应 Kaggle: Amazon Top 50 Bestselling Books 2009-2019
@@ -117,6 +142,43 @@ agent:
     # 容器/多实例部署时改为宿主 IP 或网关地址。
     public-url: ${AGENT_PUBLIC_URL:http://localhost:8080}
     version: "1.0.0"
+
+# ============ 可观测性：Actuator + Micrometer（指标 / 健康检查） ============
+# Langfuse 回答「这一次调用为什么慢」；Micrometer 回答「今天 P99 多少、工具失败率多少、
+# 一共烧了多少 token」。两者互补，缺一不可。
+#
+#   GET /actuator/health              整体健康
+#   GET /actuator/health/liveness     K8s livenessProbe
+#   GET /actuator/health/readiness    K8s readinessProbe
+#   GET /actuator/prometheus          Prometheus 抓取端点
+#
+# 自定义指标：agent.turns / agent.turn.duration(p50/p95/p99) / agent.turns.active
+#            agent.model.calls / agent.tokens / agent.tool.calls
+management:
+  endpoints:
+    web:
+      exposure:
+        include: health,info,metrics,prometheus
+  endpoint:
+    health:
+      probes:
+        enabled: true
+      # 探针分组刻意只包含「应用自身状态」，不挂 DB/Mongo indicator：
+      # 本项目设计上允许无库启动（侧边栏降级为空），把 DB 挂进 readiness 会让 Pod 一直 NotReady。
+      # 需要把依赖也纳入就绪判断时，把 jdbc / mongo 加进 include 即可。
+      group:
+        readiness:
+          include: readinessState,ping
+        liveness:
+          include: livenessState,ping
+      show-details: never
+  metrics:
+    tags:
+      application: agent-hub
+    distribution:
+      # 直方图便于跨实例聚合出准确的 P99（单实例的 percentile 无法相加）
+      percentiles-histogram:
+        agent.turn.duration: true
 
 # ============ 可观测性：Langfuse（OpenTelemetry OTLP） ============
 # 开启后：AgentScope 的 agent / 模型调用 / 工具调用会以 OTel span 上报 Langfuse，
