@@ -75,7 +75,7 @@
         <dependency>
             <groupId>org.neo4j.driver</groupId>
             <artifactId>neo4j-java-driver</artifactId>
-            <version>5.23.0</version>
+            <version>6.3.0</version>
         </dependency>
 
         <!-- ===== 备选 Repository：响应式 MongoDB ===== -->
