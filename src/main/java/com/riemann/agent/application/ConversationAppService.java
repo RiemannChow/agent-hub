@@ -121,9 +121,23 @@ public class ConversationAppService {
                             // 用 concatMap（串行）而非 flatMap：保证去重/合并逻辑中“先查 nearest 再写”的
                             // 读取-修改-写入不被并发打乱（否则同批次的重复事实会同时看到空表而双双插入）。
                             if (!text.isBlank()) {
-                                memoryExtractor.extract(userInput, text)
+                                // 异步抽取本轮稳定事实 → 写入长期记忆（使用正确 userId，非工具里的错乱 id）。
+                                // 不阻塞 SSE 响应；结果于下一轮被语义召回注入上下文。
+                                // 用 concatMap（串行）而非 flatMap：保证去重/合并逻辑中“先查 nearest 再写”的
+                                // 读取-修改-写入不被并发打乱（否则同批次的重复事实会同时看到空表而双双插入）。
+                                //
+                                // 这里的 .subscribe() 必须带超时与错误处理：之前是裸订阅，模型调用挂住会泄漏、
+                                // 异常被 Reactor 默认钩子吞掉（ErrorCallbackNotImplemented，严重时直接终止进程），
+                                // 与上一轮修的 backfill() 是同一个坑。记忆抽取是「尽力而为」的边车任务，
+                                // 任何失败都只能降级（warn + 丢弃本轮事实），绝不能影响本次回答。
+                                memoryExtractor.extract(userInput, text, userId)
                                         .flatMapMany(Flux::fromIterable)
                                         .concatMap(fact -> memoryService.save(userId, fact))
+                                        .timeout(EXTRACTION_TIMEOUT)
+                                        .doOnError(e -> log.warn(
+                                                "记忆抽取/落库失败，本轮事实暂不写入长期记忆（不影响本次回答）：{}",
+                                                e.toString()))
+                                        .onErrorResume(e -> Mono.empty())
                                         .subscribe();
                             }
                         }

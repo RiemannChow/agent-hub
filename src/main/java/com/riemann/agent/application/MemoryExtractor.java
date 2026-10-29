@@ -1,7 +1,10 @@
 package com.riemann.agent.application;
 
-import com.fasterxml.jackson.databind.JsonNode;
-import com.fasterxml.jackson.databind.ObjectMapper;
+import java.util.ArrayList;
+import java.util.List;
+
+import org.springframework.stereotype.Service;
+
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.TextBlock;
@@ -10,13 +13,13 @@ import io.agentscope.core.model.ChatResponse;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import io.agentscope.core.model.ToolSchema;
-import org.springframework.stereotype.Service;
-import reactor.core.publisher.Flux;
+
+import com.fasterxml.jackson.databind.JsonNode;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
+
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
-
-import java.util.ArrayList;
-import java.util.List;
 
 /**
  * 自动记忆抽取器（应用层）。
@@ -29,6 +32,9 @@ import java.util.List;
  *
  * <p>抽取是<b>异步、非阻塞</b>的（在 boundedElastic 调度器上执行阻塞式模型调用），不阻塞 SSE 响应流；
  * 抽取结果于下一轮对话被语义召回注入上下文。</p>
+ *
+ * <p>计费：抽取本身是一次独立的模型调用，其 token 用量通过 {@link TurnTelemetry#recordModelCall} 入账，
+ * 否则 {@code agent.tokens} / 每日配额会系统性漏算（与上下文摘要同一类问题）。</p>
  */
 @Service
 public class MemoryExtractor {
@@ -44,15 +50,19 @@ public class MemoryExtractor {
 
     private final Model model;
     private final ObjectMapper json = new ObjectMapper();
+    private final TurnTelemetry telemetry;
 
-    public MemoryExtractor(Model model) {
+    public MemoryExtractor(Model model, TurnTelemetry telemetry) {
         this.model = model;
+        this.telemetry = telemetry;
     }
 
     /**
      * 从一轮对话中抽样稳定事实。无有效输入或解析失败时返回空列表（不抛异常，保证主链路不受影响）。
+     *
+     * @param userId 调用归属用户，用于把抽取调用的 token 计入其每日配额
      */
-    public Mono<List<String>> extract(String userMsg, String assistantMsg) {
+    public Mono<List<String>> extract(String userMsg, String assistantMsg, String userId) {
         if (userMsg == null || userMsg.isBlank()) {
             return Mono.just(List.of());
         }
@@ -62,9 +72,17 @@ public class MemoryExtractor {
         return Mono.fromCallable(() -> {
                     StringBuilder sb = new StringBuilder();
                     // 复用已验证可用的 AgentScope Model；在弹性线程上阻塞收集流式响应
+                    // 同时累计最后一个响应携带的 token 用量，交给 TurnTelemetry 入账
+                    io.agentscope.core.model.ChatUsage[] usage = new io.agentscope.core.model.ChatUsage[1];
                     model.stream(List.<Msg>of(msg), List.<ToolSchema>of(), GenerateOptions.builder().build())
                             .toIterable()
-                            .forEach(resp -> appendText(resp, sb));
+                            .forEach(resp -> {
+                                appendText(resp, sb);
+                                if (resp.getUsage() != null) {
+                                    usage[0] = resp.getUsage();
+                                }
+                            });
+                    telemetry.recordModelCall(usage[0], userId);
                     return sb.toString();
                 })
                 .subscribeOn(Schedulers.boundedElastic())

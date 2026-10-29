@@ -2,6 +2,7 @@ package com.riemann.agent.infrastructure.context;
 
 import com.riemann.agent.domain.Conversation;
 import com.riemann.agent.domain.Message;
+import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
 import io.agentscope.core.message.AssistantMessage;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.SystemMessage;
@@ -9,12 +10,14 @@ import io.agentscope.core.message.UserMessage;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.model.ChatResponse;
+import io.agentscope.core.model.ChatUsage;
 import io.agentscope.core.model.GenerateOptions;
 import io.agentscope.core.model.Model;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Mono;
+import reactor.core.publisher.SignalType;
 
 import java.util.ArrayList;
 import java.util.Collections;
@@ -77,6 +80,7 @@ public class ContextWindowAssembler {
 
     private final ContextWindowProperties props;
     private final Model model;
+    private final TurnTelemetry telemetry;
 
     /**
      * 会话 → 已摘要进度。LRU 上限由 {@code agent.context.summary-cache-size} 控制，
@@ -84,9 +88,10 @@ public class ContextWindowAssembler {
      */
     private final Map<String, CachedSummary> cache;
 
-    public ContextWindowAssembler(ContextWindowProperties props, Model model) {
+    public ContextWindowAssembler(ContextWindowProperties props, Model model, TurnTelemetry telemetry) {
         this.props = props;
         this.model = model;
+        this.telemetry = telemetry;
         int max = Math.max(16, props.getSummaryCacheSize());
         this.cache = Collections.synchronizedMap(new LinkedHashMap<>(16, 0.75f, true) {
             @Override
@@ -169,7 +174,7 @@ public class ContextWindowAssembler {
 
         // 6) 增量摘要：[covered, start) 这一段压进旧摘要
         List<Turn> delta = turns.subList(covered, start);
-        return summarize(conversationId, cached == null ? "" : cached.text(), delta)
+        return summarize(conversation.userId(), conversationId, cached == null ? "" : cached.text(), delta)
                 .map(text -> {
                     if (text.isBlank()) {
                         // 摘要失败降级：保持老行为（丢掉溢出部分），并复用可能存在的旧摘要
@@ -239,7 +244,7 @@ public class ContextWindowAssembler {
      * <p>任何异常（超时、鉴权失败、网关 5xx）都收敛为空串，由调用方降级处理——
      * 摘要失败绝不能让这一轮对话失败。</p>
      */
-    private Mono<String> summarize(String conversationId, String previous, List<Turn> delta) {
+    private Mono<String> summarize(String userId, String conversationId, String previous, List<Turn> delta) {
         if (delta.isEmpty()) {
             return Mono.just(previous);
         }
@@ -263,7 +268,16 @@ public class ContextWindowAssembler {
                 .maxTokens(Math.min(4096, Math.max(256, props.getSummaryMaxChars() * 2)))
                 .build();
 
+        // 摘要是一次独立的边车模型调用，同样需要计量 token（否则 agent.tokens / 每日配额漏算）。
+        // 流式响应里 usage 通常只出现在最后一个 chunk，用原子引用兜住，最后无论成功/失败都入账。
+        java.util.concurrent.atomic.AtomicReference<ChatUsage> usage =
+                new java.util.concurrent.atomic.AtomicReference<>();
         return model.stream(prompt, List.of(), options)
+                .doOnNext(resp -> {
+                    if (resp.getUsage() != null) {
+                        usage.set(resp.getUsage());
+                    }
+                })
                 .map(ContextWindowAssembler::textOf)
                 .reduce(String::concat)
                 // 模型可能一个内容块都没吐（被网关截断/纯思考）：必须给空串兜底，
@@ -271,6 +285,12 @@ public class ContextWindowAssembler {
                 .defaultIfEmpty("")
                 .map(text -> truncate(text.trim(), props.getSummaryMaxChars()))
                 .timeout(props.getSummaryTimeout())
+                .doFinally(signal -> {
+                    // 取消（客户端断开）时不入账；其余终止路径（正常完成 / 错误降级）都记一次
+                    if (signal != SignalType.CANCEL) {
+                        telemetry.recordModelCall(usage.get(), userId);
+                    }
+                })
                 .onErrorResume(e -> {
                     log.warn("历史摘要失败，本轮降级为「仅最近窗口」：conversation={} delta={} cause={}",
                             conversationId, delta.size(), e.toString());

@@ -3,6 +3,7 @@ package com.riemann.agent.infrastructure.metrics;
 import com.riemann.agent.application.quota.AgentQuotaService;
 import io.agentscope.core.event.ModelCallEndEvent;
 import io.agentscope.core.event.ToolResultEndEvent;
+import io.agentscope.core.model.ChatUsage;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 
@@ -41,5 +42,24 @@ public class TurnTelemetry {
                         tool.getState() == null ? "unknown" : tool.getState().name());
             }
         });
+    }
+
+    /**
+     * 计量一次「边车」模型调用 —— 那些不走 ReActAgent 事件流、直接调 {@code model.stream(...)} 的调用，
+     * 例如 {@code MemoryExtractor} 的事实抽取、{@code ContextWindowAssembler} 的历史摘要。
+     *
+     * <p><b>为什么需要它：</b>此前这两处调用绕过 {@link #instrument}，导致
+     * {@code agent.tokens} / {@code agent.model.calls} 系统性少算约 1/3，每日 token 配额也漏计。
+     * 它们的 {@code ChatResponse} 里同样带 {@link ChatUsage}，抽出来在这里统一记账即可，
+     * 与事件流路径共用同一套指标与配额逻辑。</p>
+     *
+     * @param usage 该次调用最后一个 {@code ChatResponse} 携带的用量（可能为 null）
+     * @param userId 调用归属的用户，用于累计每日 token 预算
+     */
+    public void recordModelCall(ChatUsage usage, String userId) {
+        metrics.recordModelUsage(usage);
+        if (usage != null) {
+            quota.recordTokens(userId, usage.getTotalTokens());
+        }
     }
 }
