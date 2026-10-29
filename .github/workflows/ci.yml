@@ -1,0 +1,88 @@
+name: CI
+
+on:
+  pull_request:
+    branches: [ main ]
+  push:
+    branches: [ main ]
+
+# 同一分支只保留最新一次运行，节省资源
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  # ===== 门禁 1：编译 + 测试 + 静态分析（Checkstyle / Spotless / SpotBugs） =====
+  build:
+    name: Build & Quality Gate
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # fetch-depth: 0 是 Spotless ratchetFrom=main 的必要条件，
+          # 否则无法对比 main 分支、ratchet 失效。
+          fetch-depth: 0
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Compile, test & quality gates
+        # verify 阶段会依次触发：compile → test → spotless:check → checkstyle:check → spotbugs:check → package
+        run: ./mvnw -B -ntp verify
+
+      # 失败时归档静态分析 / 测试报告，便于在 PR 页面直接查看原因
+      - name: Upload reports on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-reports
+          retention-days: 7
+          if-no-files-found: ignore
+          path: |
+            target/checkstyle-result.xml
+            target/spotbugsXml.xml
+            target/site/spotbugs.html
+            target/surefire-reports/**
+
+  # ===== 门禁 2：依赖漏洞扫描（OWASP Dependency-Check） =====
+  dependency-check:
+    name: Dependency Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # 缓存 NVD 漏洞数据库，避免每次全量下载（首跑仍会拉取，较慢属正常）
+      - name: Cache Dependency-Check data
+        uses: actions/cache@v4
+        with:
+          path: ~/.m2/repository/org/owasp/dependency-check-data
+          key: depcheck-${{ runner.os }}
+
+      - name: OWASP Dependency-Check
+        # 直接以坐标调用插件，避免污染 pom.xml；CVSS>=7（HIGH 及以上）即阻断合并。
+        run: ./mvnw -B -ntp org.owasp:dependency-check-maven:10.0.4:check -DdependencyCheck.failBuildOnCVSS=7
+
+      - name: Upload scan report on failure
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dependency-check-report
+          retention-days: 7
+          if-no-files-found: ignore
+          path: target/dependency-check-report.html

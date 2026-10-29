@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SpotBugs 误报告警排除文件。门禁默认只对 High 优先级失败；
+  确有框架/响应式代码误报时，在此按 <Match> 抑制，避免无关噪音阻断合并。
+-->
+<FindBugsFilter>
+    <!-- 示例：忽略某类的特定规则（按需取消注释并替换） -->
+    <!--
+    <Match>
+        <Class name="com.riemann.agent.application.ConversationAppService"/>
+        <Bug pattern="..."/>
+    </Match>
+    -->
+</FindBugsFilter>
