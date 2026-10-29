@@ -68,7 +68,7 @@
         <dependency>
             <groupId>com.oceanbase</groupId>
             <artifactId>oceanbase-client</artifactId>
-            <version>2.4.8</version>
+            <version>2.4.19</version>
         </dependency>
 
         <!-- ===== Neo4j（OceanBase 知识图谱后端，oceanbase profile） ===== -->
