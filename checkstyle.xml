@@ -29,7 +29,10 @@
         <module name="PackageName"/>
         <module name="TypeName"/>
         <module name="MethodName"/>
-        <module name="ConstantName"/>
+        <!-- 仅约束非私有常量：私有字段（如项目惯例的 private static final Logger log）不强制大写下划线 -->
+        <module name="ConstantName">
+            <property name="applyToPrivate" value="false"/>
+        </module>
         <module name="LocalVariableName"/>
         <module name="MemberName"/>
         <module name="ParameterName"/>
