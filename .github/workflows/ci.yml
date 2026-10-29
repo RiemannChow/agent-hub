@@ -42,7 +42,7 @@ jobs:
       # 失败时归档静态分析 / 测试报告，便于在 PR 页面直接查看原因
       - name: Upload reports on failure
         if: failure()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: build-reports
           retention-days: 7
@@ -73,7 +73,7 @@ jobs:
 
       - name: Upload OSV report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: osv-dependency-report
           retention-days: 7
