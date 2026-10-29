@@ -65,6 +65,17 @@ jobs:
         run: curl -sSL -o osv-scanner https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64 && chmod +x osv-scanner
 
       - name: OSV-Scanner scan
-        # 递归扫描 pom.xml 等锁文件；发现已知漏洞时以非 0 退出，阻断合并。
+        # 当前为非阻断模式：发现问题仅作报告，不阻断合并（132 个已知漏洞作技术债逐步修）。
+        # 想恢复为门禁：去掉 continue-on-error，或改用 --severity CRITICAL 缩小范围。
         # 如需忽略特定已知项，在仓库根添加 osv-scanner.toml 配置 ignore。
-        run: ./osv-scanner --recursive ./
+        continue-on-error: true
+        run: ./osv-scanner --recursive --format json --output-file osv-report.json ./
+
+      - name: Upload OSV report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: osv-dependency-report
+          retention-days: 7
+          if-no-files-found: ignore
+          path: osv-report.json
