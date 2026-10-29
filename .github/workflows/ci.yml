@@ -69,7 +69,7 @@ jobs:
 
       # 缓存 NVD 漏洞数据库，避免每次全量下载（首跑仍会拉取，较慢属正常）
       - name: Cache Dependency-Check data
-        uses: actions/cache@v4
+        uses: actions/cache@v6
         with:
           path: ~/.m2/repository/org/owasp/dependency-check-data
           key: depcheck-${{ runner.os }}
