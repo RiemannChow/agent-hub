@@ -36,7 +36,8 @@ jobs:
 
       - name: Compile, test & quality gates
         # verify 阶段会依次触发：compile → test → spotless:check → checkstyle:check → spotbugs:check → package
-        run: ./mvnw -B -ntp verify
+        # 使用系统 Maven（runner 自带），不依赖仓库里的 Maven Wrapper。
+        run: mvn -B -ntp verify
 
       # 失败时归档静态分析 / 测试报告，便于在 PR 页面直接查看原因
       - name: Upload reports on failure
@@ -52,37 +53,18 @@ jobs:
             target/site/spotbugs.html
             target/surefire-reports/**
 
-  # ===== 门禁 2：依赖漏洞扫描（OWASP Dependency-Check） =====
-  dependency-check:
+  # ===== 门禁 2：依赖漏洞扫描（OSV-Scanner，无需 API Key，基于 OSV 数据库） =====
+  dependency-scan:
     name: Dependency Vulnerability Scan
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set up JDK 21
-        uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '21'
-          cache: maven
+      - name: Install OSV-Scanner
+        run: curl -sSL -o osv-scanner https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64 && chmod +x osv-scanner
 
-      # 缓存 NVD 漏洞数据库，避免每次全量下载（首跑仍会拉取，较慢属正常）
-      - name: Cache Dependency-Check data
-        uses: actions/cache@v4
-        with:
-          path: ~/.m2/repository/org/owasp/dependency-check-data
-          key: depcheck-${{ runner.os }}
-
-      - name: OWASP Dependency-Check
-        # 直接以坐标调用插件，避免污染 pom.xml；CVSS>=7（HIGH 及以上）即阻断合并。
-        run: ./mvnw -B -ntp org.owasp:dependency-check-maven:10.0.4:check -DdependencyCheck.failBuildOnCVSS=7
-
-      - name: Upload scan report on failure
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: dependency-check-report
-          retention-days: 7
-          if-no-files-found: ignore
-          path: target/dependency-check-report.html
+      - name: OSV-Scanner scan
+        # 递归扫描 pom.xml 等锁文件；发现已知漏洞时以非 0 退出，阻断合并。
+        # 如需忽略特定已知项，在仓库根添加 osv-scanner.toml 配置 ignore。
+        run: ./osv-scanner --recursive --skip-git ./
