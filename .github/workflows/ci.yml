@@ -27,6 +27,16 @@ jobs:
           # 否则无法对比 main 分支、ratchet 失效。
           fetch-depth: 0
 
+      # PR 触发时 checkout 的是 detached HEAD（refs/pull/N/merge），本地并没有名为 main 的引用，
+      # 而 pom.xml 里 spotless 的 ratchetFrom=main 需要本地 main 才能计算变动文件，
+      # 否则 spotless:check 直接报 "No such reference 'main'"，所有 PR 门禁都会失败。
+      - name: Ensure local main ref for Spotless ratchet
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          if ! git show-ref --verify --quiet refs/heads/main; then
+            git branch main origin/main
+          fi
+
       - name: Set up JDK 21
         uses: actions/setup-java@v4
         with:
