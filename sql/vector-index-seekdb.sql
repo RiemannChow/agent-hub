@@ -1,0 +1,35 @@
+-- ============================================================================
+-- 可选：为 book_info.embedding 建立向量索引，让向量支路走 ANN 而不是全表精确扫描
+-- ============================================================================
+--
+-- 背景
+--   BookRepository.vectorHits 目前执行：
+--     SELECT ... l2_distance(embedding, ?) AS distance
+--     FROM demo_books.book_info ORDER BY distance ASC LIMIT ?
+--   没有向量索引时这是 O(N) 全表距离计算 + 排序，数据量上来会拖垮 SeekDB。
+--
+-- 为什么放在 sql/ 而不是 plugins/seekdb-init/
+--   plugins/seekdb-init/*.sql 会被 docker-compose 在首次启动时自动执行。
+--   向量索引语法随 SeekDB / OceanBase 版本而异，若语法不兼容会导致整个初始化失败。
+--   因此本脚本是**手动、可选**的：确认版本支持后再执行，不影响默认启动。
+--
+-- 使用步骤
+--   1) 按下面的版本说明取消注释并执行 DDL（或改成你们环境的等价语法）；
+--   2) 在 application.yml 把 agent.books.vector.approximate-clause 设为该版本
+--      要求的近似检索提示（例如 APPROXIMATE），让 ORDER BY 走索引；
+--      —— 该配置值只允许字母/数字/下划线/空格，见 BookVectorSearchProperties。
+--   3) 大表且暂时无法建索引时，可先设 agent.books.vector.max-scan-rows > 0，
+--      把参与距离计算的行数限制在有界候选集内（保护/降级模式，可能漏召回）。
+--
+-- 版本说明（请按实际环境核对，以下均为参考写法）
+--   OceanBase >= 4.3 / 支持 VECTOR INDEX 的 SeekDB：
+--     CREATE VECTOR INDEX IF NOT EXISTS idx_book_embedding
+--       ON demo_books.book_info(embedding) WITH (type = hnsw, distance = l2);
+--   查询侧近似提示常见写法（以实际文档为准）：
+--     ORDER BY l2_distance(embedding, ?) APPROXIMATE LIMIT ?
+--
+-- 注意
+--   建立索引后需要重新导入/回填 embedding 才能让已有行进入索引；
+--   BookDataImporter / BookRepository.batchInsert 会在写入时计算 embedding。
+--
+-- ============================================================================
