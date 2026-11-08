@@ -20,6 +20,8 @@ import java.util.stream.Collectors;
 import org.springframework.context.annotation.Profile;
 import org.springframework.jdbc.core.JdbcTemplate;
 import org.springframework.stereotype.Repository;
+import org.springframework.transaction.PlatformTransactionManager;
+import org.springframework.transaction.support.TransactionTemplate;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 import reactor.core.scheduler.Schedulers;
@@ -43,9 +45,16 @@ public class SeekDbConversationRepository implements ConversationRepository {
     /** LLM 生成的 SQL 必须先过这道守卫（只读 / 白名单 / 强制 LIMIT），仓储层不再直接执行裸 SQL。 */
     private final SqlGuard sqlGuard;
 
-    public SeekDbConversationRepository(JdbcTemplate jdbcTemplate, SqlGuard sqlGuard) {
+    /** 沙箱合并需要把两条 UPSERT 放进同一个本地事务。 */
+    private final TransactionTemplate transactionTemplate;
+
+    public SeekDbConversationRepository(
+            JdbcTemplate jdbcTemplate,
+            SqlGuard sqlGuard,
+            PlatformTransactionManager transactionManager) {
         this.jdbc = jdbcTemplate;
         this.sqlGuard = sqlGuard;
+        this.transactionTemplate = new TransactionTemplate(transactionManager);
     }
 
     // ===================== Repository Port 实现 =====================
@@ -281,43 +290,42 @@ public class SeekDbConversationRepository implements ConversationRepository {
     }
 
     /**
-     * 把一条写 SQL 路由到「当前活跃的 COW 沙箱」；若没有沙箱则原样在主库执行。
+     * 把一条写 SQL 路由到「当前活跃的 COW 沙箱」。
      *
-     * <p>这是沙箱隔离的关键接入口：写工具（如写回对话/记忆）统一走这里， 当 {@code sandboxDbName} 非空时，把语句里被白名单允许的表名改写为 {@code
-     * <sandbox>.table}， 使写入只落在 COW 副本、绝不触碰主库。改写范围严格限定在 {@link #WRITABLE_TABLES}， 其它表（如系统的 memory
-     * 表）不进沙箱、按原语句执行。
+     * <p><b>没有活跃沙箱时拒绝执行，绝不落到主库。</b>工具层（{@code SeekSandboxWriteTool}） 已有一道 {@code isActive()}
+     * 检查，这里是仓储层的最后一道防线：任何调用方都不能绕过 「先 fork 再写」的隔离前提。表名改写交给 {@link SandboxSql} 做 AST 级校验与前缀化，
+     * 不再用文本正则，也不再放行白名单之外的表。
      */
     public Mono<Void> writeInSandboxIfAny(String sandboxDbName, String sql) {
         if (sandboxDbName == null || sandboxDbName.isBlank()) {
-            return Mono.fromRunnable(() -> jdbc.execute(sql))
-                    .subscribeOn(Schedulers.boundedElastic())
-                    .then();
+            return Mono.error(
+                    new IllegalStateException("拒绝执行：本轮没有活跃沙箱，禁止直接写主库（请先调用 seek_fork_sandbox）。"));
         }
         if (!isValidDbName(sandboxDbName)) {
             return Mono.error(new IllegalArgumentException("非法沙箱名，拒绝写入：" + sandboxDbName));
         }
-        String targetSql = qualifyTables(sql, sandboxDbName);
+        String targetSql;
+        try {
+            targetSql = SandboxSql.qualify(sql, sandboxDbName);
+        } catch (IllegalArgumentException e) {
+            return Mono.error(e);
+        }
         return Mono.fromRunnable(() -> jdbc.execute(targetSql))
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
     }
 
-    /** 仅允许进沙箱的白名单表（与 ConversationRepository 实际写入的表对齐）。 */
-    private static final java.util.Set<String> WRITABLE_TABLES =
-            java.util.Set.of("conversation", "message");
-
-    /** 把 SQL 中的白名单表名改写为 {@code <sandbox>.table} 形式。 用单词边界（\\b）匹配，避免把其它标识符里的子串误伤；只改白名单内的表。 */
-    private static String qualifyTables(String sql, String sandbox) {
-        String result = sql;
-        for (String table : WRITABLE_TABLES) {
-            result = result.replaceAll("(?i)\\b" + table + "\\b", sandbox + "." + table);
-        }
-        return result;
-    }
-
     /**
-     * 把 COW 沙箱里「白名单表」的增量合并回主库（提交）。 采用 UPSERT（ON DUPLICATE KEY UPDATE）幂等合并，主库已有行只更新、新行插入。 合并后应调用
-     * {@link #dropSandbox} 清理沙箱。
+     * 把 COW 沙箱里白名单表的改动合并回主库（提交）。
+     *
+     * <p><b>单事务</b>：conversation 与 message 两条 UPSERT 包在同一个 {@link TransactionTemplate}
+     * 里，中途失败整体回滚，不再留下「会话合并了、消息没合并」的半提交状态。
+     *
+     * <p><b>条件 UPSERT</b>：沙箱是 {@code FORK DATABASE} 出来的全量快照，若直接 {@code INSERT ... SELECT *} 会把 fork
+     * 时刻的旧行写回主库、覆盖 fork 之后其它请求 的更新。这里用 {@code IF(VALUES(ts) > 主库.ts, ...)} 只在沙箱行更新时才覆盖。
+     *
+     * <p>已知限制：仍是全表扫描合并（未做行级变更追踪），且依赖 MySQL 兼容的 {@code IF()} / {@code VALUES()}；行级增量与跨实例状态外置另开
+     * issue。
      */
     public Mono<Void> mergeSandbox(String sandboxDbName) {
         if (sandboxDbName == null || sandboxDbName.isBlank()) {
@@ -326,32 +334,33 @@ public class SeekDbConversationRepository implements ConversationRepository {
         if (!isValidDbName(sandboxDbName)) {
             return Mono.error(new IllegalArgumentException("非法沙箱名，拒绝合并：" + sandboxDbName));
         }
+        String conversationUpsert =
+                "INSERT INTO conversation SELECT * FROM "
+                        + sandboxDbName
+                        + ".conversation "
+                        + "ON DUPLICATE KEY UPDATE "
+                        + "conversation.title = IF(VALUES(updated_at) > conversation.updated_at, VALUES(title), conversation.title), "
+                        + "conversation.agent_state = IF(VALUES(updated_at) > conversation.updated_at, VALUES(agent_state), conversation.agent_state), "
+                        + "conversation.embedding = IF(VALUES(updated_at) > conversation.updated_at, VALUES(embedding), conversation.embedding), "
+                        + "conversation.updated_at = GREATEST(conversation.updated_at, VALUES(updated_at))";
+        String messageUpsert =
+                "INSERT INTO message SELECT * FROM "
+                        + sandboxDbName
+                        + ".message "
+                        + "ON DUPLICATE KEY UPDATE "
+                        + "message.content = IF(VALUES(created_at) > message.created_at, VALUES(content), message.content), "
+                        + "message.type = IF(VALUES(created_at) > message.created_at, VALUES(type), message.type), "
+                        + "message.tool_name = IF(VALUES(created_at) > message.created_at, VALUES(tool_name), message.tool_name), "
+                        + "message.arguments = IF(VALUES(created_at) > message.created_at, VALUES(arguments), message.arguments), "
+                        + "message.created_at = GREATEST(message.created_at, VALUES(created_at))";
         return Mono.fromRunnable(
-                        () -> {
-                            // conversation：合并所有业务列
-                            jdbc.execute(
-                                    "INSERT INTO conversation "
-                                            + "SELECT * FROM "
-                                            + sandboxDbName
-                                            + ".conversation "
-                                            + "ON DUPLICATE KEY UPDATE "
-                                            + "conversation.title = VALUES(title), "
-                                            + "conversation.agent_state = VALUES(agent_state), "
-                                            + "conversation.embedding = VALUES(embedding), "
-                                            + "conversation.updated_at = VALUES(updated_at)");
-                            // message：合并全部列（content / type / tool_name / arguments / created_at 等）
-                            jdbc.execute(
-                                    "INSERT INTO message "
-                                            + "SELECT * FROM "
-                                            + sandboxDbName
-                                            + ".message "
-                                            + "ON DUPLICATE KEY UPDATE "
-                                            + "message.content = VALUES(content), "
-                                            + "message.type = VALUES(type), "
-                                            + "message.tool_name = VALUES(tool_name), "
-                                            + "message.arguments = VALUES(arguments), "
-                                            + "message.created_at = VALUES(created_at)");
-                        })
+                        () ->
+                                transactionTemplate.execute(
+                                        status -> {
+                                            jdbc.execute(conversationUpsert);
+                                            jdbc.execute(messageUpsert);
+                                            return null;
+                                        }))
                 .subscribeOn(Schedulers.boundedElastic())
                 .then();
     }

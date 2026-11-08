@@ -12,6 +12,9 @@ import java.util.concurrent.atomic.AtomicReference;
  *
  * <p>因此这里用一个<b>可变持有者</b>放进 {@code RuntimeContext}：fork 写入、write/commit/discard 读出，
  * 因为持有者引用整轮共享，写入对同轮所有工具可见。它本身是线程安全的 （{@link AtomicReference}），避免开启并行工具时读写竞态。
+ *
+ * <p><b>已知限制（issue #16 后续项）：</b>状态只存活于本轮 {@code RuntimeContext}， 不跨请求、不跨实例共享。多实例部署时 fork / write /
+ * commit / discard 必须落在同一实例； 需要跨实例时把本类替换为 Redis / DB 支持的状态存储。本次修复（#16 PR）只处理写入隔离 与合并事务，不扩大到状态外置。
  */
 public final class SandboxState {
 
