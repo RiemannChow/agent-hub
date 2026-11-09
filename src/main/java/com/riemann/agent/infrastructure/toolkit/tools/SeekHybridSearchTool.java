@@ -39,10 +39,12 @@ public class SeekHybridSearchTool {
                             name = "threshold",
                             description = "可选：向量距离阈值，越小越相似，默认 1.4（取值 1.0~2.0）",
                             required = false)
-                    Double threshold) {
+                    Double threshold,
+            AgentCallContext callContext) {
         double th = (threshold == null || threshold < 1.0 || threshold > 2.0) ? 1.4 : threshold;
         String embedding = LocalEmbedder.embedToSql(queryText);
-        return seekDb.hybridSearch(embedding, keyword, th, 5)
+        String userId = callContext == null ? null : callContext.userId();
+        return seekDb.hybridSearch(userId, embedding, keyword, th, 5)
                 .map(list -> list.stream().map(ScoredResult::from).toList());
     }
 }
