@@ -84,9 +84,11 @@ public class ConversationAppService {
             String userInput,
             ConversationId conversationId,
             Map<String, Object> attributes) {
+        // A conversation id is not a secret. Without this check a caller could pass another
+        // user's conversationId and have messages appended to that conversation.
         Mono<Conversation> convMono =
                 repository
-                        .findById(conversationId)
+                        .findByIdForUser(conversationId, userId)
                         .switchIfEmpty(
                                 Mono.fromCallable(
                                         () -> createConversation(userId, conversationId)));
@@ -228,10 +230,10 @@ public class ConversationAppService {
         return repository.findByUserId(userId).map(this::summarize);
     }
 
-    /** 获取某个会话的完整消息（点击历史项后回填聊天区）。 */
-    public Mono<ConversationDetail> getConversation(ConversationId id) {
+    /** 获取某个会话的完整消息（点击历史项后回填聊天区）；仅供已认证且归属匹配的用户。 */
+    public Mono<ConversationDetail> getConversationForUser(ConversationId id, String userId) {
         return repository
-                .findById(id)
+                .findByIdForUser(id, userId)
                 .map(
                         conv -> {
                             var messages =

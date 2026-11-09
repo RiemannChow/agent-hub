@@ -1,22 +1,19 @@
 package com.riemann.agent.auth;
 
-import org.springframework.core.annotation.Order;
-import org.springframework.http.HttpMethod;
-import org.springframework.http.HttpStatus;
-import org.springframework.http.HttpCookie;
-import org.springframework.stereotype.Component;
-import org.springframework.web.server.WebFilter;
-import org.springframework.web.server.WebFilterChain;
-import org.springframework.web.server.ServerWebExchange;
-import reactor.core.publisher.Mono;
-
 import java.net.URI;
 import java.nio.charset.StandardCharsets;
+import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpCookie;
+import org.springframework.http.HttpMethod;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Component;
+import org.springframework.web.server.ServerWebExchange;
+import org.springframework.web.server.WebFilter;
+import org.springframework.web.server.WebFilterChain;
+import reactor.core.publisher.Mono;
 
 /**
- * 登录拦截：未携带有效 token 时，
- *  - 访问 HTML 页面（/、/chat.html）重定向到 /sign_in.html
- *  - 访问受保护 API 返回 401
+ * 登录拦截：未携带有效 token 时， - 访问 HTML 页面（/、/chat.html）重定向到 /sign_in.html - 访问受保护 API 返回 401
  * 公开路径：登录相关接口、登录页、分享只读页、公开分享快照、静态资源。
  */
 @Component
@@ -46,27 +43,48 @@ public class AuthenticationWebFilter implements WebFilter {
         // “ServerHttpResponse already committed”）。
         // 因此改为：先判定会话是否存在且未过期（得到 Mono<Boolean>），再分支决定放行或 401。
         return sessions.findById(token)
-                .map(s -> s.expiresAt() >= System.currentTimeMillis())
-                .defaultIfEmpty(false)
-                .flatMap(authed -> authed
-                        ? chain.filter(exchange)
-                        : unauthorized(exchange, path));
+                .map(
+                        s ->
+                                (s.expiresAt() >= System.currentTimeMillis()
+                                                && s.userId() != null
+                                                && !s.userId().isBlank())
+                                        ? s.userId()
+                                        : "")
+                .defaultIfEmpty("")
+                .flatMap(
+                        userId -> {
+                            if (userId.isEmpty()) {
+                                return unauthorized(exchange, path);
+                            }
+                            // The session is the only trusted source of identity. Controllers must
+                            // not
+                            // accept a userId from the request body, a query parameter or a header.
+                            AuthenticatedUser.bind(exchange, userId);
+                            return chain.filter(exchange);
+                        });
     }
 
     private boolean isPublic(ServerWebExchange ex, String path) {
         if (ex.getRequest().getMethod() == HttpMethod.OPTIONS) return true;
         if (path.startsWith("/api/auth/")) return true;
-        if (path.equals("/") || path.equals("/sign_in.html") || path.equals("/share.html")) return true;
+        if (path.equals("/") || path.equals("/sign_in.html") || path.equals("/share.html"))
+            return true;
         if (path.startsWith("/share/")) return true; // 重定向控制器
         // 公开分享快照（只读），仅 GET
-        if (path.startsWith("/api/agent/share/") && ex.getRequest().getMethod() == HttpMethod.GET) return true;
-        // A2A 协议对外暴露面（Agent Card / JSON-RPC 端点 / 服务发现视图）必须免登录，
-        // 以便 Nacos 服务发现拉取 Agent Card、以及 A2A 客户端直接调用 JSON-RPC，无需 UI 登录态。
+        if (path.startsWith("/api/agent/share/") && ex.getRequest().getMethod() == HttpMethod.GET)
+            return true;
+        // Agent Card is public by the A2A spec and carries no user data.
         if (path.equals("/.well-known/agent.json")) return true;
-        if (path.equals("/a2a/agents")) return true;
-        if (path.equals("/a2a/delegation")) return true;
-        if (path.equals("/a2a")) return true;
+        // Peer agents reach the JSON-RPC endpoint without a UI login, but must identify
+        // themselves; otherwise an anonymous caller could drive the agent and burn its quota.
+        if (path.equals("/a2a") && hasAgentId(ex)) return true;
+        // /a2a/agents and /a2a/delegation are management views and now require a login session.
         return false;
+    }
+
+    private boolean hasAgentId(ServerWebExchange ex) {
+        String agentId = ex.getRequest().getHeaders().getFirst("X-Agent-Id");
+        return agentId != null && !agentId.isBlank();
     }
 
     private String extractToken(ServerWebExchange ex) {
