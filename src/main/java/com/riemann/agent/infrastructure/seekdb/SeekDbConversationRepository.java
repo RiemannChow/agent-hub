@@ -218,17 +218,25 @@ public class SeekDbConversationRepository implements ConversationRepository {
      * 对话做近邻排序。
      *
      * <p>keyword 为空时退化为纯向量检索；非空时叠加全文过滤。距离越小越相似。
+     *
+     * <p><b>Security:</b> results are restricted to {@code userId}. Without this predicate the
+     * query scanned every ACTIVE conversation in the table and returned other users' titles and
+     * content through {@code seek_hybrid_search} (issue #19).
      */
     public Mono<List<ScoredConversation>> hybridSearch(
-            String queryEmbedding, String keyword, double threshold, int limit) {
+            String userId, String queryEmbedding, String keyword, double threshold, int limit) {
+        if (userId == null || userId.isBlank()) {
+            return Mono.error(new IllegalArgumentException("userId is required for hybrid search"));
+        }
         StringBuilder sql = new StringBuilder();
         sql.append("SELECT c.conversation_id, c.title, c.content, ")
                 .append("l2_distance(c.embedding, ?) AS dist ")
                 .append("FROM conversation c ")
                 // 仅检索带向量 embedding 的“知识库/客服”对话；普通聊天会话 embedding 为 NULL，排除之
-                .append("WHERE c.status = 'ACTIVE' AND c.embedding IS NOT NULL ");
+                .append("WHERE c.status = 'ACTIVE' AND c.embedding IS NOT NULL AND c.user_id = ? ");
         List<Object> params = new ArrayList<>();
         params.add(queryEmbedding);
+        params.add(userId);
         if (keyword != null && !keyword.isBlank()) {
             sql.append("AND MATCH(c.content) AGAINST (? IN BOOLEAN MODE) ");
             params.add(keyword);
