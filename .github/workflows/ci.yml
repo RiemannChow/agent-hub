@@ -63,6 +63,16 @@ jobs:
             target/site/spotbugs.html
             target/surefire-reports/**
 
+      # 覆盖率报告始终归档，便于在 PR 页面查看趋势
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: jacoco-coverage-report
+          retention-days: 7
+          if-no-files-found: ignore
+          path: target/site/jacoco/**
+
   # ===== 门禁 2：依赖漏洞扫描（OSV-Scanner，无需 API Key，基于 OSV 数据库） =====
   dependency-scan:
     name: Dependency Vulnerability Scan
@@ -75,11 +85,18 @@ jobs:
         run: curl -sSL -o osv-scanner https://github.com/google/osv-scanner/releases/download/v2.7.0/osv-scanner_linux_amd64 && chmod +x osv-scanner
 
       - name: OSV-Scanner scan
-        # 当前为非阻断模式：发现问题仅作报告，不阻断合并（132 个已知漏洞作技术债逐步修）。
-        # 想恢复为门禁：去掉 continue-on-error，或改用 --severity CRITICAL 缩小范围。
-        # 如需忽略特定已知项，在仓库根添加 osv-scanner.toml 配置 ignore。
-        continue-on-error: true
-        run: ./osv-scanner --recursive --format json --output-file osv-report.json ./
+        # The scanner exits non-zero whenever it finds ANY vulnerability (147 known IDs when
+        # this gate was enabled). Keep the report so the artifact is always uploaded, then let
+        # the baseline gate below decide pass/fail: known debt does not break the build, but
+        # any NEW advisory blocks the merge (issue #23).
+        run: |
+          ./osv-scanner --recursive --format json --output-file osv-report.json ./ || true
+
+      - name: Test the OSV baseline gate
+        run: python3 .github/scripts/test_check_osv_baseline.py
+
+      - name: Fail on new vulnerabilities
+        run: python3 .github/scripts/check_osv_baseline.py osv-report.json .github/osv-baseline.txt
 
       - name: Upload OSV report
         if: always()
