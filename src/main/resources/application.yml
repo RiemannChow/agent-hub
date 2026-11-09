@@ -173,6 +173,9 @@ agent:
       # 只允许委托给这些对端（按 Agent Card 的 name 或 Nacos 服务名匹配）；留空表示不限制
       # 环境变量用逗号分隔：AGENT_A2A_ALLOWLIST="电商数据分析助手,agent-hub-kg"
       allowlist: ${AGENT_A2A_ALLOWLIST:}
+      # Comma-separated hosts allowed for outbound delegation. Empty = block loopback /
+      # link-local / cloud metadata addresses but allow other Nacos-discovered hosts.
+      endpoint-allowlist: ${AGENT_A2A_ENDPOINT_ALLOWLIST:}
     # ---- 任务存储（tasks/get / tasks/cancel）----
     tasks:
       ttl: ${AGENT_A2A_TASK_TTL:30m}
