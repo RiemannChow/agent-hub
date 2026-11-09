@@ -95,19 +95,21 @@ public class AgentChatController {
                         })
                 // 客户端断开（关标签页/网关超时/前端点停止后 abort）→ CANCEL：
                 // 1) dispose 上游，停止继续向 sink 灌事件；
-                // 2) 通知编排层中断本轮，让 Agent 不再发起下一轮推理；
-                // 3) 清理该会话的 sink，避免内存泄漏。
+                // 2) 通知编排层中断本轮，让 Agent 不再发起下一轮推理。
+                // 无论 CANCEL / ON_COMPLETE / ON_ERROR，最后都要释放 sink（issue #21）。
                 .doFinally(
                         signal -> {
                             if (signal == SignalType.CANCEL) {
                                 upstream.dispose();
                                 boolean cancelled = appService.cancelTurn(id.value());
-                                eventBus.remove(id, sink);
                                 log.info(
                                         "客户端断开，已取消会话 {} 的当前轮次（interrupted={}）",
                                         id.value(),
                                         cancelled);
                             }
+                            // Release on EVERY termination signal. Previously only CANCEL removed
+                            // the sink, so a completed turn leaked its whole replay buffer.
+                            eventBus.remove(id, sink);
                         });
     }
 
