@@ -79,6 +79,14 @@ agent:
       name: ${AGENT_FALLBACK_MODEL_NAME:}
       base-url: ${AGENT_FALLBACK_BASE_URL:}
       api-key: ${AGENT_FALLBACK_API_KEY:}
+  # ============ SSE 事件总线：有界回放 + TTL + 容量上限（防内存泄漏） ============
+  events:
+    # 每个会话为迟到订阅者保留的事件数上限（替代无界的 replay().all()）
+    max-replay-events: ${AGENT_EVENTS_MAX_REPLAY_EVENTS:256}
+    # sink 最长存活时间；必须大于 agent.execution.turn-timeout，否则长轮次会被提前清理
+    ttl: ${AGENT_EVENTS_TTL:10m}
+    # 同时活跃的会话上限，超出按创建时间淘汰最旧的
+    max-active-conversations: ${AGENT_EVENTS_MAX_ACTIVE_CONVERSATIONS:1000}
   # ============ 执行层：超时 / 重试 / 整轮上限 ============
   # AgentScope 自带默认值（模型 5 分钟 / 3 次、工具 5 分钟 / 1 次），偏宽且不可运营，
   # 这里显式下发：模型单次超时可重试、工具默认不重试（避免副作用重复执行）、

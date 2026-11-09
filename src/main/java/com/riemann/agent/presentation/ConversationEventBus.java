@@ -2,61 +2,154 @@ package com.riemann.agent.presentation;
 
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.ConversationId;
+import java.time.Duration;
+import java.time.Instant;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.concurrent.ConcurrentHashMap;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Sinks;
 
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
-
 /**
- * 按会话维护一个 Sink：POST 端点写入事件流，GET 端点（或晚到的订阅者）订阅同一事件流。
+ * Keeps one bounded SSE sink per conversation: the POST /chat endpoint writes events, the GET
+ * /stream endpoint (or a late subscriber) reads the same stream.
  *
- * 采用 Sinks.many().replay().all() 而非 multicast()：replay 会缓存已发出的事件，
- * 保证 HTTP 订阅者即使晚于上游发射一两个 tick 也能收到完整事件流（避免 multicast
- * 在“零订阅者”阶段丢事件），同时也让 GET /stream 的迟到订阅者能回放本轮历史。
+ * <p><b>Why replay instead of multicast:</b> a replay sink buffers events already emitted, so a
+ * subscriber that arrives a tick or two late still receives the current turn. A plain multicast
+ * sink drops events while it has zero subscribers. The buffer is bounded by {@link
+ * ConversationEventBusProperties#getMaxReplayEvents()} — the old {@code replay().all()} kept every
+ * token, tool result and the final answer for the whole lifetime of the process.
  *
- * <p><b>关键修复（多轮“同一连接后续回答都等于第一个回答”）</b>：原本用
- * {@code computeIfAbsent} 按 conversationId 复用同一个 sink，而该 sink 在每轮结束时会被
- * {@code tryEmitComplete()} 置为已完成态。下一轮（同一 conversationId）再 {@code register}
- * 时拿到的是<b>已完成的旧 sink</b>，replay 会立刻把“第一轮的答案”又推给新订阅者、随后立即
- * complete，于是客户端在 0.0s 内收到第一轮的回答——这就是“后续回答都等于第一个回答”的直接原因。
- * 因此 <b>每一轮（每次 POST /chat）都创建全新的 sink 并替换掉旧的</b>，旧 sink 在此刻被
- * tryEmitComplete 关闭（结束可能正在其上订阅的 GET /stream，影响不大，历史可走 /conversations 接口）。
- * GET /stream 在某一轮期间订阅时拿到的是“本轮”的 sink，可正常回放本轮事件。</p>
+ * <p><b>Why a brand new sink every turn:</b> reusing one sink via {@code computeIfAbsent} meant the
+ * next turn on the same conversationId got an already-completed sink, which immediately replayed
+ * the first turn's answer and completed. That was the "every follow-up answer equals the first
+ * answer" bug. {@link #register} therefore always creates a fresh sink and completes the previous
+ * one.
+ *
+ * <p><b>Leak fix (issue #21):</b> the map entry used to be removed only on client CANCEL. A
+ * normally completed or failed turn left its sink (and its whole replay buffer) in the map forever.
+ * {@link AgentChatController} now releases the sink on every termination signal; this class
+ * additionally adds a TTL sweep and a hard capacity cap so that even a stalled upstream that never
+ * terminates cannot grow the heap without bound.
+ *
+ * <p><b>Still single-instance only:</b> sinks live in this JVM's heap. Multi-instance deployments
+ * need Redis / a message broker for SSE, cancellation and quota state; that is tracked separately
+ * and is not solved by these bounds.
  */
 @Component
 public class ConversationEventBus {
 
-    private final Map<String, Sinks.Many<AgentEvent>> sinks = new ConcurrentHashMap<>();
+    private static final Logger log = LoggerFactory.getLogger(ConversationEventBus.class);
 
-    public Sinks.Many<AgentEvent> register(ConversationId id) {
-        // 每一轮都新建独立 sink，避免复用上一轮已 complete 的 sink 导致首轮答案被回放。
-        Sinks.Many<AgentEvent> sink = Sinks.many().replay().all();
-        Sinks.Many<AgentEvent> prev = sinks.put(id.value(), sink);
-        if (prev != null) {
-            prev.tryEmitComplete();
+    private final Map<String, Entry> sinks = new ConcurrentHashMap<>();
+    private final ConversationEventBusProperties props;
+
+    public ConversationEventBus(ConversationEventBusProperties props) {
+        this.props = props;
+    }
+
+    /** A sink plus the timestamps used for TTL and oldest-first eviction. */
+    private record Entry(Sinks.Many<AgentEvent> sink, Instant createdAt, Instant expiresAt) {
+
+        boolean expired(Instant now) {
+            return !now.isBefore(expiresAt);
         }
+    }
+
+    /** Registers a fresh sink for this turn and returns it. */
+    public Sinks.Many<AgentEvent> register(ConversationId id) {
+        Instant now = Instant.now();
+        Duration ttl = props.getTtl();
+        Sinks.Many<AgentEvent> sink = Sinks.many().replay().limit(props.getMaxReplayEvents());
+        Entry previous = sinks.put(id.value(), new Entry(sink, now, now.plus(ttl)));
+        if (previous != null) {
+            previous.sink().tryEmitComplete();
+        }
+        sweep(now);
+        evictIfNeeded();
         return sink;
     }
 
+    /** Returns the current turn's stream, or an error if it is missing / expired. */
     public Flux<AgentEvent> flux(ConversationId id) {
-        Sinks.Many<AgentEvent> sink = sinks.get(id.value());
-        if (sink == null) {
+        Entry entry = sinks.get(id.value());
+        if (entry == null) {
             return Flux.error(new IllegalStateException("no active stream for " + id.value()));
         }
-        return sink.asFlux();
+        if (entry.expired(Instant.now())) {
+            if (sinks.remove(id.value(), entry)) {
+                entry.sink().tryEmitComplete();
+            }
+            return Flux.error(new IllegalStateException("no active stream for " + id.value()));
+        }
+        return entry.sink().asFlux();
     }
 
     /**
-     * 注销某个 sink。
-     *
-     * <p>客户端中断（关标签页/点停止）时调用：只删掉「确实还是这个 sink」的那条记录，
-     * 避免把同会话新一轮刚注册的 sink 误删。</p>
+     * Releases a sink after the stream terminates. Only removes the entry when it still holds
+     * exactly this sink, so a newer turn on the same conversationId is never deleted by mistake.
      */
     public void remove(ConversationId id, Sinks.Many<AgentEvent> sink) {
-        if (sink != null) {
-            sinks.remove(id.value(), sink);
+        if (sink == null) {
+            return;
         }
+        Entry entry = sinks.get(id.value());
+        if (entry != null && entry.sink() == sink && sinks.remove(id.value(), entry)) {
+            sink.tryEmitComplete();
+        }
+    }
+
+    /** Number of currently registered sinks (also useful for tests and metrics). */
+    public int size() {
+        return sinks.size();
+    }
+
+    /** Periodically drops expired entries; runs off the request threads. */
+    @Scheduled(fixedDelay = 60_000)
+    public void sweep() {
+        sweep(Instant.now());
+    }
+
+    /** Visible for tests: sweep with an explicit clock instant. */
+    void sweep(Instant now) {
+        int before = sinks.size();
+        sinks.entrySet()
+                .removeIf(
+                        e -> {
+                            if (!e.getValue().expired(now)) {
+                                return false;
+                            }
+                            e.getValue().sink().tryEmitComplete();
+                            return true;
+                        });
+        int removed = before - sinks.size();
+        if (removed > 0) {
+            log.debug("[SSE] Evicted {} expired sinks, {} remaining", removed, sinks.size());
+        }
+    }
+
+    /** Hard cap on live conversations; evicts oldest-first and completes their sinks. */
+    private void evictIfNeeded() {
+        int max = props.getMaxActiveConversations();
+        if (sinks.size() <= max) {
+            return;
+        }
+        List<Map.Entry<String, Entry>> ordered =
+                sinks.entrySet().stream()
+                        .sorted(Comparator.comparing(e -> e.getValue().createdAt()))
+                        .toList();
+        int toRemove = sinks.size() - max;
+        for (int i = 0; i < toRemove && i < ordered.size(); i++) {
+            Map.Entry<String, Entry> oldest = ordered.get(i);
+            if (sinks.remove(oldest.getKey(), oldest.getValue())) {
+                oldest.getValue().sink().tryEmitComplete();
+            }
+        }
+        log.debug("[SSE] Active streams exceeded cap {}, evicted {} oldest", max, toRemove);
     }
 }
