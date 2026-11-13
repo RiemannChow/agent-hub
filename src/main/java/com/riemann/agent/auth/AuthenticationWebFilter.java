@@ -75,16 +75,12 @@ public class AuthenticationWebFilter implements WebFilter {
             return true;
         // Agent Card is public by the A2A spec and carries no user data.
         if (path.equals("/.well-known/agent.json")) return true;
-        // Peer agents reach the JSON-RPC endpoint without a UI login, but must identify
-        // themselves; otherwise an anonymous caller could drive the agent and burn its quota.
-        if (path.equals("/a2a") && hasAgentId(ex)) return true;
+        // Peer agents reach the JSON-RPC endpoint without a UI login. A2aAuthenticationFilter
+        // (ordered right after this filter) performs the actual HMAC verification and rejects
+        // the request when no shared secret is configured. Do not trust X-Agent-Id here.
+        if (path.equals("/a2a")) return true;
         // /a2a/agents and /a2a/delegation are management views and now require a login session.
         return false;
-    }
-
-    private boolean hasAgentId(ServerWebExchange ex) {
-        String agentId = ex.getRequest().getHeaders().getFirst("X-Agent-Id");
-        return agentId != null && !agentId.isBlank();
     }
 
     private String extractToken(ServerWebExchange ex) {
