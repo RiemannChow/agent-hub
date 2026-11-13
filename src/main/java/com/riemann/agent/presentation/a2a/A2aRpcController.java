@@ -3,6 +3,7 @@ package com.riemann.agent.presentation.a2a;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.riemann.agent.application.ConversationAppService;
+import com.riemann.agent.auth.AuthenticatedAgent;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.ConversationId;
 import com.riemann.agent.infrastructure.a2a.A2aClientProperties;
@@ -28,8 +29,8 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RestController;
+import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
@@ -48,9 +49,6 @@ import reactor.core.publisher.Mono;
  */
 @RestController
 public class A2aRpcController {
-
-    /** 调用方标识请求头：对端委托时由 {@code A2aClient} 写入，用于把不同调用方隔离到各自的配额桶。 */
-    private static final String AGENT_ID_HEADER = "X-Agent-Id";
 
     /** 没有任何身份信息时的兜底 userId（所有匿名调用共享一个桶，仅用于本地调试）。 */
     private static final String ANONYMOUS_USER = "a2a:anonymous";
@@ -78,8 +76,10 @@ public class A2aRpcController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.APPLICATION_JSON_VALUE)
     public Mono<ResponseEntity<String>> handleJson(
-            @RequestBody String body,
-            @RequestHeader(value = AGENT_ID_HEADER, required = false) String agentId) {
+            @RequestBody String body, ServerWebExchange exchange) {
+        // The agent id was bound by A2aAuthenticationFilter after verifying the HMAC signature.
+        // Never read the raw X-Agent-Id header here: it is an untrusted claim.
+        String agentId = AuthenticatedAgent.require(exchange);
         JsonRpcRequest req = parseRequest(body);
         if (req == null) {
             return Mono.just(
@@ -95,8 +95,8 @@ public class A2aRpcController {
         }
         return switch (req.method()) {
             case "message/send" -> messageSend(req, agentId);
-            case "tasks/get" -> tasksGet(req);
-            case "tasks/cancel" -> tasksCancel(req);
+            case "tasks/get" -> tasksGet(req, agentId);
+            case "tasks/cancel" -> tasksCancel(req, agentId);
             case "message/stream" ->
                     Mono.just(
                             errorJson(
@@ -119,8 +119,8 @@ public class A2aRpcController {
             consumes = MediaType.APPLICATION_JSON_VALUE,
             produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     public Flux<ServerSentEvent<String>> handleStream(
-            @RequestBody String body,
-            @RequestHeader(value = AGENT_ID_HEADER, required = false) String agentId) {
+            @RequestBody String body, ServerWebExchange exchange) {
+        String agentId = AuthenticatedAgent.require(exchange);
         JsonRpcRequest req = parseRequest(body);
         if (req == null) {
             return Flux.just(errorSse(null, JsonRpcError.PARSE_ERROR, "Parse error"));
@@ -168,8 +168,9 @@ public class A2aRpcController {
                                             ctx.contextId(),
                                             ctx.message(),
                                             sb.toString());
-                            // 记录 conversationId：这样后续 tasks/cancel 才能定位到真正在跑的那一轮
-                            taskStore.put(task, ctx.conversationId());
+                            // 记录 conversationId 与已验签的 owner：后续 tasks/cancel 才能定位到
+                            // 真正在跑的那一轮，且别的对端无法读到/取消这条任务
+                            taskStore.put(task, ctx.conversationId(), agentId);
                             return ResponseEntity.ok(json(JsonRpcResponse.success(req.id(), task)));
                         })
                 .onErrorResume(
@@ -244,7 +245,8 @@ public class A2aRpcController {
                                                         ctx.contextId(),
                                                         ctx.message(),
                                                         full),
-                                                ctx.conversationId());
+                                                ctx.conversationId(),
+                                                agentId);
                                         return Flux.just((Object) last, (Object) done);
                                     }
                                     return Mono.empty();
@@ -267,7 +269,7 @@ public class A2aRpcController {
 
     // ===================== tasks/get & tasks/cancel =====================
 
-    private Mono<ResponseEntity<String>> tasksGet(JsonRpcRequest req) {
+    private Mono<ResponseEntity<String>> tasksGet(JsonRpcRequest req, String owner) {
         String id =
                 req.params() != null && req.params().has("id")
                         ? req.params().get("id").asText()
@@ -275,7 +277,7 @@ public class A2aRpcController {
         if (id == null) {
             return Mono.just(errorJson(req.id(), JsonRpcError.INVALID_PARAMS, "Missing params.id"));
         }
-        return Mono.justOrEmpty(taskStore.get(id))
+        return Mono.justOrEmpty(taskStore.get(id, owner))
                 .map(task -> ResponseEntity.ok(json(JsonRpcResponse.success(req.id(), task))))
                 .defaultIfEmpty(
                         ResponseEntity.ok(
@@ -294,7 +296,7 @@ public class A2aRpcController {
      * 照烧，直到 {@code turn-timeout} 才收手。 现在通过任务关联的 conversationId 反查，调用 {@link
      * ConversationAppService#cancelTurn}， 置位 AgentScope 的中断标志（下一次迭代开始处生效）。
      */
-    private Mono<ResponseEntity<String>> tasksCancel(JsonRpcRequest req) {
+    private Mono<ResponseEntity<String>> tasksCancel(JsonRpcRequest req, String owner) {
         String id =
                 req.params() != null && req.params().has("id")
                         ? req.params().get("id").asText()
@@ -302,12 +304,13 @@ public class A2aRpcController {
         if (id == null) {
             return Mono.just(errorJson(req.id(), JsonRpcError.INVALID_PARAMS, "Missing params.id"));
         }
-        String conversationId = taskStore.conversationIdOf(id).orElse(null);
+        String conversationId = taskStore.conversationIdOf(id, owner).orElse(null);
         boolean interrupted = conversationId != null && appService.cancelTurn(conversationId);
 
         return Mono.justOrEmpty(
                         taskStore.computeIfPresent(
                                 id,
+                                owner,
                                 t ->
                                         new Task(
                                                 t.id(),

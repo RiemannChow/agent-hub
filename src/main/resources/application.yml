@@ -160,6 +160,15 @@ agent:
     # 容器/多实例部署时改为宿主 IP 或网关地址。
     public-url: ${AGENT_PUBLIC_URL:http://localhost:8080}
     version: "1.0.0"
+    # ---- 服务间鉴权：POST /a2a 必须携带 HMAC-SHA256 签名 ----
+    # 未设置 shared-secret 时 /a2a 一律 401（fail closed）；/.well-known/agent.json 仍公开。
+    # 所有对端必须配置同一个密钥，构成同一信任域。
+    auth:
+      shared-secret: ${AGENT_A2A_SHARED_SECRET:}
+      # 本智能体稳定身份：用于签名、任务归属与配额桶，不能用每次会话变化的 id
+      agent-id: ${AGENT_A2A_AGENT_ID:agent-hub}
+      # 允许的对端时钟偏差（签名时间戳窗口）
+      allowed-skew: ${AGENT_A2A_ALLOWED_SKEW:5m}
     # ---- 服务发现 ----
     discovery:
       # Nacos 快照刷新间隔（拉取所有实例的 Agent Card）
