@@ -5,7 +5,10 @@ import com.fasterxml.jackson.databind.ObjectMapper;
 import com.fasterxml.jackson.databind.node.ArrayNode;
 import com.fasterxml.jackson.databind.node.ObjectNode;
 import java.net.URI;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.time.Instant;
+import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -38,10 +41,12 @@ public class A2aClient {
     private final WebClient webClient = WebClient.create();
     private final ObjectMapper json = new ObjectMapper();
     private final A2aClientProperties props;
+    private final A2aAuthProperties authProps;
     private final A2aEndpointGuard endpointGuard;
 
-    public A2aClient(A2aClientProperties props) {
+    public A2aClient(A2aClientProperties props, A2aAuthProperties authProps) {
         this.props = props;
+        this.authProps = authProps;
         this.endpointGuard = new A2aEndpointGuard(props.getEndpointAllowlist());
     }
 
@@ -69,6 +74,9 @@ public class A2aClient {
      */
     public Mono<DelegationResult> sendMessage(
             String endpoint, String text, String contextId, String callerAgentId, int depth) {
+        if (!authProps.isConfigured()) {
+            return Mono.just(DelegationResult.failure("A2A shared secret is not configured"));
+        }
         URI target;
         try {
             target = endpointGuard.validate(endpoint);
@@ -87,7 +95,7 @@ public class A2aClient {
                 .uri(target)
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
-                .header("X-Agent-Id", callerAgentId)
+                .headers(h -> authHeaders(target, body).forEach(h::set))
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
@@ -106,6 +114,9 @@ public class A2aClient {
      * @return true 表示对端确认已取消
      */
     public Mono<Boolean> cancelTask(String endpoint, String taskId) {
+        if (!authProps.isConfigured()) {
+            return Mono.just(false);
+        }
         URI target;
         try {
             target = endpointGuard.validate(endpoint);
@@ -128,6 +139,7 @@ public class A2aClient {
                 .uri(target)
                 .contentType(MediaType.APPLICATION_JSON)
                 .accept(MediaType.APPLICATION_JSON)
+                .headers(h -> authHeaders(target, body).forEach(h::set))
                 .bodyValue(body)
                 .retrieve()
                 .bodyToMono(String.class)
@@ -149,6 +161,29 @@ public class A2aClient {
 
     // ===================== 内部 =====================
 
+    /**
+     * Signs an outbound JSON-RPC request. The agent id is the stable configured identity, not the
+     * per-conversation callerAgentId, so quota buckets and task owners stay consistent across
+     * turns. The server rejects unsigned requests, so a deployment without a shared secret simply
+     * cannot delegate (see the isConfigured() short-circuits above).
+     */
+    private Map<String, String> authHeaders(URI target, String body) {
+        String agentId = authProps.getAgentId();
+        String timestamp = Long.toString(Instant.now().getEpochSecond());
+        String signature =
+                A2aSignature.sign(
+                        authProps.getSharedSecret(),
+                        "POST",
+                        target.getPath(),
+                        timestamp,
+                        agentId,
+                        body.getBytes(StandardCharsets.UTF_8));
+        return Map.of(
+                A2aSignature.AGENT_ID_HEADER, agentId,
+                A2aSignature.TIMESTAMP_HEADER, timestamp,
+                A2aSignature.SIGNATURE_HEADER, signature);
+    }
+
     private ObjectNode buildSendRequest(
             String text, String contextId, String callerAgentId, int depth) {
         ObjectNode req = json.createObjectNode();
@@ -165,9 +200,10 @@ public class A2aClient {
         ObjectNode part = parts.addObject();
         part.put("kind", "text");
         part.put("text", text);
-        // metadata 让对端知道「谁在调、第几跳」，是深度限制与审计的唯一凭据
+        // metadata 让对端知道「谁在调、第几跳」，是深度限制与审计的唯一凭据。
+        // userId 仅为审计字段：对端身份由已验签的 X-Agent-Id 决定，不再从这里取。
         ObjectNode metadata = message.putObject("metadata");
-        metadata.put("userId", "a2a:" + callerAgentId);
+        metadata.put("userId", "a2a:" + authProps.getAgentId());
         metadata.put("callerAgentId", callerAgentId);
         metadata.put("delegationDepth", depth);
         return req;
