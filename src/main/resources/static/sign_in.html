@@ -163,7 +163,9 @@ $('sendCode').addEventListener('click', async () => {
     sending = true; $('sendCode').disabled = true;
     try {
         const r = await api('/api/auth/sms/send', { method: 'POST', body: JSON.stringify({ phone }) });
-        $('codeHint').textContent = '演示验证码：' + r.code + '（真实环境由短信下发，5 分钟内有效）';
+        $('codeHint').textContent = r.demo
+            ? '演示验证码：' + r.code + '（5 分钟内有效）'
+            : '验证码已通过短信下发，5 分钟内有效';
         cooldown = 60; tick();
     } catch (e) { $('phoneErr').textContent = e.message; }
     finally { sending = false; }

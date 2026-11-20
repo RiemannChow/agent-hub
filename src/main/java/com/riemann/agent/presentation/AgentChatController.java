@@ -121,13 +121,34 @@ public class AgentChatController {
     @PostMapping("/chat/{conversationId}/stop")
     public Mono<Map<String, Object>> stop(
             @PathVariable String conversationId, ServerWebExchange exchange) {
-        AuthenticatedUser.require(exchange);
-        boolean cancelled = appService.cancelTurn(conversationId);
-        return Mono.just(
-                Map.of(
-                        "conversationId", conversationId,
-                        "cancelled", cancelled,
-                        "note", cancelled ? "已请求中断，当前这次模型/工具调用返回后即停止" : "该会话当前没有正在生成的轮次"));
+        String userId = AuthenticatedUser.require(exchange);
+        // 归属校验必须在中断之前完成。此前这里只校验了「已登录」，任何登录用户都能
+        // 凭 conversationId 中断他人的生成轮次；stream/getConversation 都走了
+        // getConversationForUser，唯独 stop 漏掉了同样的检查（issue #27）。
+        return appService
+                .getConversationForUser(new ConversationId(conversationId), userId)
+                .switchIfEmpty(
+                        Mono.error(
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND, "Conversation not found")))
+                .onErrorMap(
+                        AccessDeniedException.class,
+                        e -> new ResponseStatusException(HttpStatus.FORBIDDEN, "Forbidden"))
+                .then(
+                        Mono.defer(
+                                () -> {
+                                    boolean cancelled = appService.cancelTurn(conversationId);
+                                    return Mono.just(
+                                            Map.of(
+                                                    "conversationId",
+                                                    conversationId,
+                                                    "cancelled",
+                                                    cancelled,
+                                                    "note",
+                                                    cancelled
+                                                            ? "已请求中断，当前这次模型/工具调用返回后即停止"
+                                                            : "该会话当前没有正在生成的轮次"));
+                                }));
     }
 
     /** 把领域异常翻译成前端可判别的错误码（前端据此决定是提示「稍后再试」还是「明天再来」）。 */

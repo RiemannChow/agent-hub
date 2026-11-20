@@ -60,6 +60,22 @@ spring:
 # ============ Agent Persona（切换行业只需改这里） ============
 # 该文档不带 on-profile，对所有 profile 均生效（seekdb / mongo 都能读到 agent.*）
 agent:
+  # ============ 登录安全：短信网关 / 微信回调 / CSRF ============
+  # demo 模式仅用于本地演示（验证码在响应中回传）；生产必须切到 http 并关闭微信模拟确认。
+  auth:
+    sms:
+      mode: ${AGENT_AUTH_SMS_MODE:demo}
+      gateway-url: ${AGENT_SMS_GATEWAY_URL:}
+      gateway-token: ${AGENT_SMS_GATEWAY_TOKEN:}
+      resend-cooldown: ${AGENT_SMS_RESEND_COOLDOWN:60s}
+      max-per-hour: ${AGENT_SMS_MAX_PER_HOUR:5}
+      max-attempts: ${AGENT_SMS_MAX_ATTEMPTS:5}
+    wechat:
+      demo-confirm: ${AGENT_WECHAT_DEMO_CONFIRM:true}
+      callback-token: ${AGENT_WECHAT_CALLBACK_TOKEN:}
+      allowed-skew: ${AGENT_WECHAT_ALLOWED_SKEW:5m}
+    csrf:
+      enabled: ${AGENT_CSRF_ENABLED:true}
   persona:
     role-name: "电商数据分析助手"
     domain-description: "你服务于电商行业，擅长对用户行为、GMV、转化率进行问数分析，数据存储在 SeekDB 中。"
