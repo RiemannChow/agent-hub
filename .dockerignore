@@ -1,0 +1,16 @@
+.git
+.github
+.idea
+target
+doc
+plugins
+sql
+example
+*.md
+.env
+.env.*
+!.env.example
+Dockerfile
+.dockerignore
+docker-compose.yml
+k8s

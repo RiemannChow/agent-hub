@@ -1,0 +1,75 @@
+# replicas=1 is intentional: quotas, sandbox state, the SSE event bus and the A2A task
+# store are still process-local. Scale out only after moving them to Redis.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: agent-hub
+  labels:
+    app: agent-hub
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: agent-hub
+  template:
+    metadata:
+      labels:
+        app: agent-hub
+    spec:
+      terminationGracePeriodSeconds: 60
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001
+        fsGroup: 10001
+      containers:
+        - name: agent-hub
+          image: ghcr.io/riemannchow/agent-hub:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: SERVER_SHUTDOWN
+              value: graceful
+            - name: SPRING_LIFECYCLE_TIMEOUT_PER_SHUTDOWN_PHASE
+              value: 30s
+            # Production auth settings. Secrets themselves come from agent-hub-secret.
+            - name: AGENT_AUTH_SMS_MODE
+              value: http
+            - name: AGENT_WECHAT_DEMO_CONFIRM
+              value: "false"
+          envFrom:
+            - secretRef:
+                name: agent-hub-secret
+                optional: true
+          readinessProbe:
+            httpGet:
+              path: /actuator/health/readiness
+              port: http
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /actuator/health/liveness
+              port: http
+            initialDelaySeconds: 30
+            periodSeconds: 20
+          resources:
+            requests:
+              cpu: 250m
+              memory: 512Mi
+            limits:
+              cpu: "2"
+              memory: 2Gi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+      volumes:
+        - name: tmp
+          emptyDir: {}

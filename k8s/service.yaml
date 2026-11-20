@@ -1,0 +1,14 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: agent-hub
+  labels:
+    app: agent-hub
+spec:
+  type: ClusterIP
+  selector:
+    app: agent-hub
+  ports:
+    - name: http
+      port: 80
+      targetPort: http
