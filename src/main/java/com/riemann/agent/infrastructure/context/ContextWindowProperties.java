@@ -1,24 +1,21 @@
 package com.riemann.agent.infrastructure.context;
 
+import java.time.Duration;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
-
-import java.time.Duration;
 
 /**
  * 上下文窗口与摘要配置（{@code agent.context.*}）。
  *
- * <p><b>为什么不再用「硬截断最近 8 条」：</b>按条数截断有两个硬伤——</p>
+ * <p><b>为什么不再用「硬截断最近 8 条」：</b>按条数截断有两个硬伤——
+ *
  * <ol>
- *   <li>条数与 token 不成比例：一条粘贴了长表格的用户消息可能就占满整个窗口，
- *       而 8 条寒暄却几乎不占；按条数切会让「窗口实际大小」在几百到几万 token 之间乱跳。</li>
- *   <li>被切掉的历史直接消失：用户在第 3 轮说过的口径（“只看 2015 年以后”“按季度拆”）
- *       到第 9 轮就没了，模型只能重新猜或者再问一遍。</li>
+ *   <li>条数与 token 不成比例：一条粘贴了长表格的用户消息可能就占满整个窗口， 而 8 条寒暄却几乎不占；按条数切会让「窗口实际大小」在几百到几万 token 之间乱跳。
+ *   <li>被切掉的历史直接消失：用户在第 3 轮说过的口径（“只看 2015 年以后”“按季度拆”） 到第 9 轮就没了，模型只能重新猜或者再问一遍。
  * </ol>
  *
- * <p>本配置把窗口拆成两个正交的旋钮：<b>保留多少</b>（条数 + 字符双上限）
- * 与<b>丢掉的部分怎么办</b>（滚动摘要）。摘要只覆盖被挤出窗口的部分，
- * 且带缓存——同一段历史不会每轮重复摘要。</p>
+ * <p>本配置把窗口拆成两个正交的旋钮：<b>保留多少</b>（条数 + 字符双上限） 与<b>丢掉的部分怎么办</b>（滚动摘要）。摘要只覆盖被挤出窗口的部分，
+ * 且带缓存——同一段历史不会每轮重复摘要。
  */
 @Component
 @ConfigurationProperties(prefix = "agent.context")
@@ -33,21 +30,26 @@ public class ContextWindowProperties {
     /**
      * 最近窗口的字符预算。与 {@link #recentMessages} 同时生效，先到者为准。
      *
-     * <p>字符数不等于 token 数（中文约 1 字 ≈ 1 token，英文约 4 字符 ≈ 1 token），
-     * 但作为「防止单条超长消息挤爆窗口」的粗粒度闸门足够可靠，且无需引入 tokenizer 依赖。</p>
+     * <p>字符数不等于 token 数（中文约 1 字 ≈ 1 token，英文约 4 字符 ≈ 1 token）， 但作为「防止单条超长消息挤爆窗口」的粗粒度闸门足够可靠，且无需引入
+     * tokenizer 依赖。
      */
     private int recentCharBudget = 6000;
 
     /**
-     * 触发摘要的最小溢出条数：被挤出窗口的老历史达到这么多条，才值得花一次模型调用。
-     * 只有一两条溢出时直接丢弃更划算。
+     * 最近窗口的 token 预算，与条数/字符预算同时生效，先到者为准。
+     *
+     * <p>字符数不等于 token 数：中文约 1 字 ≈ 1 token，英文约 4 字符 ≈ 1 token。 只按字符预算裁剪时，中文长历史很容易超出模型上下文；这里用 {@link
+     * TokenCounter} 做估算计数。设为 0 可退回纯字符预算行为。
      */
+    private int recentTokenBudget = 4000;
+
+    /** token 计数策略：heuristic（默认，中文友好）/ char（一律 4 字符 ≈ 1 token）。 */
+    private String tokenCounting = "heuristic";
+
+    /** 触发摘要的最小溢出条数：被挤出窗口的老历史达到这么多条，才值得花一次模型调用。 只有一两条溢出时直接丢弃更划算。 */
     private int summaryTriggerMessages = 4;
 
-    /**
-     * 增量摘要的最小新增条数：距上次摘要新增的老消息不足这么多条时，
-     * 复用旧摘要并把这一小段留在窗口里，避免「每轮都摘要一次」的额外开销。
-     */
+    /** 增量摘要的最小新增条数：距上次摘要新增的老消息不足这么多条时， 复用旧摘要并把这一小段留在窗口里，避免「每轮都摘要一次」的额外开销。 */
     private int summaryMinNewMessages = 4;
 
     /** 摘要正文的最大字符数。超出截断。 */
@@ -81,6 +83,22 @@ public class ContextWindowProperties {
 
     public void setRecentCharBudget(int recentCharBudget) {
         this.recentCharBudget = recentCharBudget;
+    }
+
+    public int getRecentTokenBudget() {
+        return recentTokenBudget;
+    }
+
+    public void setRecentTokenBudget(int recentTokenBudget) {
+        this.recentTokenBudget = recentTokenBudget;
+    }
+
+    public String getTokenCounting() {
+        return tokenCounting;
+    }
+
+    public void setTokenCounting(String tokenCounting) {
+        this.tokenCounting = tokenCounting;
     }
 
     public int getSummaryTriggerMessages() {

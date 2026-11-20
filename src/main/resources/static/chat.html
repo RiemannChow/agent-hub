@@ -175,6 +175,71 @@
         .msg.think[open] .bubble { margin-top: 4px; }
         .msg.think .bubble { color: var(--muted); font-style: italic; font-size: 13px; }
 
+        /* ===== Markdown 渲染 ===== */
+        .msg.agent .bubble p { margin: 0 0 8px; }
+        .msg.agent .bubble p:last-child { margin-bottom: 0; }
+        .msg.agent .bubble h1, .msg.agent .bubble h2, .msg.agent .bubble h3 {
+            margin: 10px 0 6px; font-size: 1.08em; line-height: 1.35;
+        }
+        .msg.agent .bubble ul, .msg.agent .bubble ol { margin: 6px 0 8px; padding-left: 22px; }
+        .msg.agent .bubble li { margin: 2px 0; }
+        .msg.agent .bubble a { color: var(--accent); text-decoration: none; }
+        .msg.agent .bubble a:hover { text-decoration: underline; }
+        .msg.agent .bubble code.md-inline {
+            background: rgba(127,140,180,.18); padding: 1px 5px; border-radius: 5px;
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .92em;
+        }
+        .msg.agent .bubble pre.md-code {
+            background: #0d1016; border: 1px solid var(--border); border-radius: 9px;
+            padding: 10px 12px; overflow-x: auto; margin: 8px 0; white-space: pre;
+        }
+        .msg.agent .bubble pre.md-code code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+            font-size: 12.5px; line-height: 1.55; color: #d7deea;
+        }
+        .md-code .k { color: #c792ea; }
+        .md-code .n { color: #f78c6c; }
+        .md-code .s { color: #c3e88d; }
+        .msg.agent .bubble table {
+            border-collapse: collapse; width: 100%; font-size: 13px; margin: 8px 0;
+        }
+        .msg.agent .bubble th, .msg.agent .bubble td {
+            border: 1px solid var(--border); padding: 6px 9px; text-align: left;
+        }
+        .msg.agent .bubble th { background: var(--panel); color: var(--muted); }
+        .msg.agent .bubble blockquote {
+            margin: 8px 0; padding-left: 10px; border-left: 3px solid var(--accent); color: var(--muted);
+        }
+        /* ===== 人在回路审批卡片 ===== */
+        .approval-block { border-left: 3px solid var(--tool); }
+        .approval-block .ap-body { padding: 12px 14px; font-size: 13.5px; line-height: 1.6; }
+        .approval-block .ap-actions { display: flex; gap: 10px; padding: 0 14px 13px; }
+        .approval-block button {
+            padding: 7px 16px; border-radius: 8px; cursor: pointer; font-size: 13px;
+            border: 1px solid var(--border); background: var(--panel-2); color: var(--text);
+        }
+        .approval-block button.yes { background: var(--ok); color: #08130d; border-color: var(--ok); }
+        .approval-block button:disabled { opacity: .5; cursor: default; }
+        .approval-block .ap-result { padding: 0 14px 13px; font-size: 12.5px; color: var(--muted); }
+        /* ===== 附件上传 ===== */
+        .composer { flex-wrap: wrap; }
+        .attach-btn {
+            background: transparent; border: 1px solid var(--border); color: var(--muted);
+            border-radius: 9px; width: 38px; height: 38px; cursor: pointer; font-size: 17px;
+        }
+        .attach-btn:hover { color: var(--accent); border-color: var(--accent); }
+        #fileInput { display: none; }
+        #attachmentList {
+            width: 100%; display: flex; flex-wrap: wrap; gap: 6px;
+        }
+        #attachmentList:empty { display: none; }
+        .att-chip {
+            display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px;
+            background: var(--panel-2); border: 1px solid var(--border);
+            border-radius: 999px; padding: 4px 8px; color: var(--muted);
+        }
+        .att-chip button { border: 0; background: transparent; color: var(--muted); cursor: pointer; }
+
         .toolcard {
             align-self: flex-start; width: 92%;
             background: var(--panel); border: 1px solid var(--border);
@@ -422,6 +487,9 @@
             <footer>
                 <div class="composer">
                     <textarea id="input" rows="1" placeholder="给 agent-hub 发消息，例如：上月电商 GMV 是多少？"></textarea>
+                    <button class="attach-btn" id="attachBtn" title="上传图片或文本文件">＋</button>
+                    <input type="file" id="fileInput" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/*,application/json"/>
+                    <div id="attachmentList"></div>
                     <button id="send">发送</button>
                     <button id="stop" class="hidden">停止</button>
                 </div>
@@ -498,6 +566,103 @@ async function loadUser() {
     } catch (_) {}
 }
 
+// ===== 轻量 Markdown 渲染（先转义再解析，杜绝 XSS） =====
+function mdInline(s) {
+    return s
+        .replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>')
+        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+        .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
+        .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
+}
+function mdCells(line) {
+    return line.slice(1, -1).split('|').map(x => x.trim());
+}
+function mdIsTableSep(line) {
+    return /^\|[\s\-:|]+\|$/.test(line) && line.includes('-');
+}
+function mdHighlight(code) {
+    const kw = 'SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|JOIN|LEFT|RIGHT|INNER|ON|AS|AND|OR|'
+             + 'INSERT|UPDATE|DELETE|CREATE|DROP|SUM|COUNT|AVG|MAX|MIN|ROUND|CASE|WHEN|THEN|ELSE|END|WITH|DESC|ASC';
+    return code.replace(new RegExp('\\b(' + kw + ')\\b', 'g'), '<span class="k">$1</span>');
+}
+function renderMarkdown(src) {
+    if (!src) return '';
+    const escaped = escapeHtml(src);
+    const codeBlocks = [];
+    const text = escaped.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (m, lang, code) => {
+        const key = '\u0000CODE' + codeBlocks.length + '\u0000';
+        codeBlocks.push('<pre class="md-code"><code>' + mdHighlight(code.replace(/\n$/, '')) + '</code></pre>');
+        return key;
+    });
+    const lines = text.split('\n');
+    let out = '', para = [], list = null, items = [], i = 0;
+    const flushPara = () => {
+        if (para.length) { out += '<p>' + mdInline(para.join('<br>')) + '</p>'; para = []; }
+    };
+    const flushList = () => {
+        if (list) { out += '<' + list + '>' + items.join('') + '</' + list + '>'; list = null; items = []; }
+    };
+    while (i < lines.length) {
+        const line = lines[i], t = line.trim();
+        const codeHit = t.match(/^\u0000CODE(\d+)\u0000$/);
+        if (codeHit) { flushPara(); flushList(); out += codeBlocks[Number(codeHit[1])]; i++; continue; }
+        if (!t) { flushPara(); flushList(); i++; continue; }
+        if (/^\|.*\|$/.test(t) && i + 1 < lines.length && mdIsTableSep(lines[i + 1].trim())) {
+            flushPara(); flushList();
+            const head = mdCells(t), rows = [];
+            i += 2;
+            while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) {
+                rows.push(mdCells(lines[i].trim())); i++;
+            }
+            out += '<table><thead><tr>' + head.map(c => '<th>' + mdInline(c) + '</th>').join('')
+                 + '</tr></thead><tbody>'
+                 + rows.map(r => '<tr>' + r.map(c => '<td>' + mdInline(c) + '</td>').join('') + '</tr>').join('')
+                 + '</tbody></table>';
+            continue;
+        }
+        const h = t.match(/^(#{1,3})\s+(.*)$/);
+        if (h) { flushPara(); flushList(); out += '<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>'; i++; continue; }
+        const ul = t.match(/^[-*]\s+(.*)$/), ol = t.match(/^\d+\.\s+(.*)$/);
+        if (ul || ol) {
+            flushPara();
+            const want = ul ? 'ul' : 'ol';
+            if (list !== want) { flushList(); list = want; }
+            items.push('<li>' + mdInline((ul || ol)[1]) + '</li>'); i++; continue;
+        }
+        if (t.startsWith('&gt;')) { flushPara(); flushList(); out += '<blockquote>' + mdInline(t.slice(4)) + '</blockquote>'; i++; continue; }
+        flushList(); para.push(t); i++;
+    }
+    flushPara(); flushList();
+    return out;
+}
+
+// ===== 附件选择 =====
+let pendingAttachments = [];
+function renderAttachments() {
+    const box = $('attachmentList'); box.innerHTML = '';
+    pendingAttachments.forEach((a, idx) => {
+        const chip = document.createElement('span'); chip.className = 'att-chip';
+        chip.textContent = '📎 ' + a.name;
+        const x = document.createElement('button'); x.textContent = '×'; x.title = '移除';
+        x.onclick = () => { pendingAttachments.splice(idx, 1); renderAttachments(); };
+        chip.appendChild(x); box.appendChild(chip);
+    });
+}
+$('attachBtn').addEventListener('click', () => $('fileInput').click());
+$('fileInput').addEventListener('change', async (e) => {
+    for (const f of e.target.files) {
+        if (f.size > 2 * 1024 * 1024) { addToolCard('附件', f.name + ' 超过 2MB，已跳过', true); continue; }
+        if (pendingAttachments.length >= 5) { addToolCard('附件', '最多 5 个附件，其余已跳过', true); break; }
+        const data = await new Promise(resolve => {
+            const r = new FileReader();
+            r.onload = () => resolve(String(r.result).split(',')[1] || '');
+            r.readAsDataURL(f);
+        });
+        pendingAttachments.push({ name: f.name, mimeType: f.type || 'application/octet-stream', data });
+    }
+    renderAttachments(); e.target.value = '';
+});
+
 function setStatus(state, text) { dotEl.className = 'dot ' + state; statusEl.textContent = text; }
 function scrollToBottom() { messagesEl.scrollTop = messagesEl.scrollHeight; }
 
@@ -556,13 +721,44 @@ function isUiJson(s) {
     if (o.type === 'table' && Array.isArray(o.columns) && Array.isArray(o.rows)) return true;
     if (o.type === 'chart' && Array.isArray(o.labels) && Array.isArray(o.values)) return true;
     if (o.type === 'hybrid' && o.input && o.coarse && Array.isArray(o.fused)) return true;
+    if (o.type === 'approval' && o.id) return true;
     return false;
 }
 function addUiBlock(ui) {
     if (!ui) return;
+    if (ui.type === 'approval') return addApprovalBlock(ui);
     if (ui.type === 'chart') return addChartBlock(ui);
     if (ui.type === 'hybrid') return addHybridBlock(ui);
     return addTableBlock(ui);
+}
+// 人在回路审批卡片：用户点「批准」才真正执行工具注册的副作用动作。
+function addApprovalBlock(ui) {
+    const wrap = document.createElement('div'); wrap.className = 'uiblock approval-block';
+    const head = document.createElement('div'); head.className = 'ub-head';
+    head.innerHTML = '<span class="ub-ico">✋</span>' + escapeHtml(ui.title || '需要确认');
+    const body = document.createElement('div'); body.className = 'ap-body';
+    body.textContent = ui.description || '该操作会修改服务端状态，请确认。';
+    const actions = document.createElement('div'); actions.className = 'ap-actions';
+    const yes = document.createElement('button'); yes.className = 'yes'; yes.textContent = '批准';
+    const no = document.createElement('button'); no.textContent = '拒绝';
+    const result = document.createElement('div'); result.className = 'ap-result';
+    const decide = async (approve) => {
+        yes.disabled = true; no.disabled = true; result.textContent = '处理中…';
+        try {
+            const url = '/api/agent/approvals/' + encodeURIComponent(ui.id) + (approve ? '/approve' : '/reject');
+            const resp = await authFetch(url, { method: 'POST' });
+            const j = await resp.json();
+            result.textContent = (approve ? '已批准：' : '已拒绝：') + (j.result || '完成');
+        } catch (err) {
+            result.textContent = '操作失败：' + String(err);
+            yes.disabled = false; no.disabled = false;
+        }
+    };
+    yes.onclick = () => decide(true);
+    no.onclick = () => decide(false);
+    actions.appendChild(yes); actions.appendChild(no);
+    wrap.appendChild(head); wrap.appendChild(body); wrap.appendChild(actions); wrap.appendChild(result);
+    messagesEl.appendChild(wrap); scrollToBottom(); return wrap;
 }
 function addTableBlock(ui) {
     const wrap = document.createElement('div'); wrap.className = 'uiblock';
@@ -776,11 +972,18 @@ async function send() {
     // 生成中把「发送」换成「停止」
     sendBtn.classList.add('hidden'); stopBtn.classList.remove('hidden'); stopBtn.disabled = false;
     stopRequested = false;
-    addUserMessage(text); inputEl.value = ''; inputEl.style.height = 'auto';
+    const attachmentNote = pendingAttachments.length ? '\n（附 ' + pendingAttachments.length + ' 个文件）' : '';
+    addUserMessage(text + attachmentNote);
+    const outgoingAttachments = pendingAttachments;
+    pendingAttachments = []; renderAttachments();
+    inputEl.value = ''; inputEl.style.height = 'auto';
 
     let agentBubble = null, thinkWrap = null, hadToken = false, lastTool = null, assistantIdx = -1;
 
-    const payload = JSON.stringify({ userId: USER_ID, message: text, conversationId: conversationId });
+    const payload = JSON.stringify({
+        userId: USER_ID, message: text, conversationId: conversationId,
+        attachments: outgoingAttachments
+    });
     try {
         const resp = await authFetch('/api/agent/chat', {
             method: 'POST', headers: { 'Content-Type': 'application/json' }, body: payload
@@ -810,7 +1013,7 @@ async function send() {
                         hadToken = true;
                         currentMessages[assistantIdx].content += (obj.delta || '');
                         // A2UI 兜底：实时剥离 markdown 表格，避免气泡里出现重复表格
-                        agentBubble.textContent = stripMarkdownTable(currentMessages[assistantIdx].content);
+                        agentBubble.innerHTML = renderMarkdown(stripMarkdownTable(currentMessages[assistantIdx].content));
                         scrollToBottom(); break;
                     case 'tool_calling':
                         setStatus('busy', '调用工具：' + (obj.toolName || ''));
@@ -929,7 +1132,7 @@ async function openConversation(id) {
         currentMessages = detail.messages.map(m => ({ type: m.type, content: m.content, toolName: m.toolName, arguments: m.arguments }));
         detail.messages.forEach(m => {
             if (m.type === 'user') addUserMessage(m.content || '');
-            else if (m.type === 'assistant') { const b = newAgentMessage(); b.textContent = stripMarkdownTable(m.content || ''); }
+            else if (m.type === 'assistant') { const b = newAgentMessage(); b.innerHTML = renderMarkdown(stripMarkdownTable(m.content || '')); }
             else if (m.type === 'tool_call') addToolCard('调用工具 ' + (m.toolName || ''), m.arguments || '');
             else if (m.type === 'tool_result') {
                 if (isUiJson(m.content)) addUiBlock(parseUi(m.content));

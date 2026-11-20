@@ -1,5 +1,6 @@
 package com.riemann.agent.presentation;
 
+import com.riemann.agent.application.ApprovalService;
 import com.riemann.agent.application.ConversationAppService;
 import com.riemann.agent.application.quota.QuotaExceededException;
 import com.riemann.agent.auth.AuthenticatedUser;
@@ -36,10 +37,45 @@ public class AgentChatController {
 
     private final ConversationAppService appService;
     private final ConversationEventBus eventBus;
+    private final ApprovalService approvals;
 
     public AgentChatController(ConversationAppService appService, ConversationEventBus eventBus) {
+        this(appService, eventBus, null);
+    }
+
+    @org.springframework.beans.factory.annotation.Autowired
+    public AgentChatController(
+            ConversationAppService appService,
+            ConversationEventBus eventBus,
+            ApprovalService approvals) {
         this.appService = appService;
         this.eventBus = eventBus;
+        this.approvals = approvals;
+    }
+
+    /** 批准一次挂起的副作用操作（只有创建者可以）。 */
+    @PostMapping("/approvals/{id}/approve")
+    public Mono<Map<String, Object>> approve(@PathVariable String id, ServerWebExchange exchange) {
+        String userId = AuthenticatedUser.require(exchange);
+        return requireApprovals()
+                .approve(id, userId)
+                .map(result -> Map.of("ok", true, "result", result));
+    }
+
+    /** 拒绝一次挂起的副作用操作。 */
+    @PostMapping("/approvals/{id}/reject")
+    public Mono<Map<String, Object>> reject(@PathVariable String id, ServerWebExchange exchange) {
+        String userId = AuthenticatedUser.require(exchange);
+        return requireApprovals()
+                .reject(id, userId)
+                .map(result -> Map.of("ok", true, "result", result));
+    }
+
+    private ApprovalService requireApprovals() {
+        if (approvals == null) {
+            throw new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "审批服务不可用");
+        }
+        return approvals;
     }
 
     @PostMapping(value = "/chat", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
@@ -53,7 +89,14 @@ public class AgentChatController {
 
         // POST 与 GET 订阅者共享同一个多播 Sink
         Sinks.Many<AgentEvent> sink = eventBus.register(id);
-        Flux<AgentEvent> events = appService.chat(userId, request.message(), id);
+        Map<String, Object> attributes =
+                request.attachments() == null || request.attachments().isEmpty()
+                        ? Map.of()
+                        : Map.of(
+                                com.riemann.agent.infrastructure.context.AttachmentProcessor
+                                        .ATTR_KEY,
+                                request.attachments());
+        Flux<AgentEvent> events = appService.chat(userId, request.message(), id, attributes);
         // 关键：保留上游订阅句柄。之前只 subscribe 不持有 Disposable，客户端断开时
         // 被取消的只是 sink 的下游，上游仍在跑——Agent 的 ReAct 循环会继续烧 token。
         Disposable upstream =
@@ -232,5 +275,9 @@ public class AgentChatController {
      * Request body. {@code userId} is kept for backwards compatibility with the bundled UI but is
      * deliberately ignored: the identity always comes from the authenticated session.
      */
-    public record ChatRequest(String userId, String message, String conversationId) {}
+    public record ChatRequest(
+            String userId,
+            String message,
+            String conversationId,
+            java.util.List<ChatAttachment> attachments) {}
 }

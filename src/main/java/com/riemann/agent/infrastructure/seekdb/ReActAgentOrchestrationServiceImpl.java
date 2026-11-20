@@ -5,6 +5,7 @@ import com.riemann.agent.application.MemoryService;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
 import com.riemann.agent.domain.Conversation;
+import com.riemann.agent.infrastructure.context.AttachmentProcessor;
 import com.riemann.agent.infrastructure.context.ContextWindowAssembler;
 import com.riemann.agent.infrastructure.execution.ActiveTurnRegistry;
 import com.riemann.agent.infrastructure.execution.AgentExecutionProperties;
@@ -47,6 +48,7 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
     private final TurnTelemetry telemetry;
     private final AgentMetrics metrics;
     private final ContextWindowAssembler contextAssembler;
+    private final AttachmentProcessor attachmentProcessor;
     private final SeekDbConversationRepository seekDb;
 
     public ReActAgentOrchestrationServiceImpl(
@@ -59,7 +61,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
             TurnTelemetry telemetry,
             AgentMetrics metrics,
             ContextWindowAssembler contextAssembler,
-            SeekDbConversationRepository seekDb) {
+            SeekDbConversationRepository seekDb,
+            AttachmentProcessor attachmentProcessor) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.memoryService = memoryService;
@@ -69,6 +72,7 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         this.telemetry = telemetry;
         this.metrics = metrics;
         this.contextAssembler = contextAssembler;
+        this.attachmentProcessor = attachmentProcessor;
         this.seekDb = seekDb;
     }
 
@@ -91,6 +95,9 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
                 () -> {
                     String conversationId = conversation.id().value();
                     String userId = conversation.userId();
+                    AttachmentProcessor.Processed attachments =
+                            attachmentProcessor.process(
+                                    AttachmentProcessor.fromAttributes(attributes));
                     // 关键修复：AgentScope 的 ReActAgent 会按 sessionId 在内部 AgentState 里累积消息历史。
                     // 若每次都用默认 sessionId，多轮调用会把历史越攒越多，模型锚定在最早的一条消息上
                     // （如首轮“hi”），导致“同一连接后续回答都等于第一个回答”。这里每轮用唯一 sessionId，
@@ -113,7 +120,11 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
                             .flatMapMany(
                                     memoryCtx ->
                                             contextAssembler
-                                                    .assemble(conversation, memoryCtx, true)
+                                                    .assemble(
+                                                            conversation,
+                                                            memoryCtx,
+                                                            true,
+                                                            attachments.blocks())
                                                     .flatMapMany(
                                                             window ->
                                                                     runTurn(

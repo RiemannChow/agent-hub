@@ -141,6 +141,10 @@ agent:
     recent-messages: ${AGENT_CONTEXT_RECENT_MESSAGES:8}
     # 最近窗口的字符预算：防止一条超长消息（长表格/长贴文）挤爆上下文
     recent-char-budget: ${AGENT_CONTEXT_RECENT_CHAR_BUDGET:6000}
+    # token 级预算：中文约 1 字/token、英文约 4 字符/token；0 = 退回纯字符预算
+    recent-token-budget: ${AGENT_CONTEXT_RECENT_TOKEN_BUDGET:4000}
+    # token 计数策略：heuristic（中文友好）/ char（一律 4 字符 ≈ 1 token）
+    token-counting: ${AGENT_CONTEXT_TOKEN_COUNTING:heuristic}
     # 溢出不足这么多条时直接丢弃，不值得为几条历史花一次模型调用
     summary-trigger-messages: 4
     # 距上次摘要新增不足这么多条时复用旧摘要，避免每轮都摘要
