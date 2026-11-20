@@ -2,6 +2,7 @@ package com.riemann.agent.presentation.a2a;
 
 import com.riemann.agent.infrastructure.a2a.A2aTaskStoreProperties;
 import com.riemann.agent.presentation.a2a.protocol.Task;
+import com.riemann.agent.presentation.a2a.protocol.TaskState;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.List;
@@ -114,6 +115,41 @@ public class A2aTaskStore {
                                             old.expiresAt());
                         });
         return updated == null ? Optional.empty() : Optional.of(updated.task());
+    }
+
+    /**
+     * 列出属于该调用方的任务（tasks/list）。过期任务不返回，contextId/state 为可选过滤条件， 按创建时间倒序。owner 过滤是硬约束：对端永远看不到别人的任务。
+     */
+    public List<Task> list(String owner, String contextId, TaskState state, int limit, int offset) {
+        return tasks.values().stream()
+                .filter(e -> !e.expired())
+                .filter(e -> e.ownedBy(owner))
+                .filter(e -> contextId == null || contextId.equals(e.task().contextId()))
+                .filter(
+                        e ->
+                                state == null
+                                        || (e.task().status() != null
+                                                && e.task().status().state() == state))
+                .sorted(Comparator.comparing(Entry::createdAt).reversed())
+                .skip(Math.max(0, offset))
+                .limit(Math.max(1, limit))
+                .map(Entry::task)
+                .toList();
+    }
+
+    /** 与 {@link #list} 使用同一过滤条件的总数，用于计算 nextPageToken。 */
+    public int count(String owner, String contextId, TaskState state) {
+        return (int)
+                tasks.values().stream()
+                        .filter(e -> !e.expired())
+                        .filter(e -> e.ownedBy(owner))
+                        .filter(e -> contextId == null || contextId.equals(e.task().contextId()))
+                        .filter(
+                                e ->
+                                        state == null
+                                                || (e.task().status() != null
+                                                        && e.task().status().state() == state))
+                        .count();
     }
 
     public int size() {

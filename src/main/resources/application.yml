@@ -176,6 +176,14 @@ agent:
     # 容器/多实例部署时改为宿主 IP 或网关地址。
     public-url: ${AGENT_PUBLIC_URL:http://localhost:8080}
     version: "1.0.0"
+    # ---- 推送通知：任务状态变化时 POST 到对端注册的 Webhook ----
+    push:
+      enabled: ${AGENT_A2A_PUSH_ENABLED:true}
+      # 回调 URL 白名单（逗号分隔的 host）。留空时只拦截 link-local/multicast，demo 可用 localhost。
+      allowed-hosts: ${AGENT_A2A_PUSH_ALLOWED_HOSTS:}
+      # 通知签名密钥；留空自动复用 A2A shared-secret，回调方需用同一密钥验签
+      signature-secret: ${AGENT_A2A_PUSH_SIGNATURE_SECRET:${AGENT_A2A_SHARED_SECRET:}}
+      max-configs-per-task: ${AGENT_A2A_PUSH_MAX_CONFIGS:5}
     # ---- 服务间鉴权：POST /a2a 必须携带 HMAC-SHA256 签名 ----
     # 未设置 shared-secret 时 /a2a 一律 401（fail closed）；/.well-known/agent.json 仍公开。
     # 所有对端必须配置同一个密钥，构成同一信任域。
