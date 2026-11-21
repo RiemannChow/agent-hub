@@ -66,8 +66,11 @@ jobs:
 
       # Non-blocking: upload findings to the Security tab; tighten exit-code once
       # the existing advisory backlog is reviewed (same policy as the OSV baseline).
+      # v0.31.0+ pins the nested setup-trivy dependency to a commit SHA.
+      # Older releases reference deleted setup-trivy tags (v0.2.1 / v0.2.2),
+      # which fail during "Set up job" before the scan even starts.
       - name: Run Trivy
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           scan-type: fs
           scan-ref: .
