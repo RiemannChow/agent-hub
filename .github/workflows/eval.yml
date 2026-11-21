@@ -1,0 +1,116 @@
+name: Evaluation
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+concurrency:
+  group: eval-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  golden-set:
+    name: Golden-set trajectory evaluation
+    runs-on: ubuntu-latest
+    # Non-blocking while the baseline is being established (issue #27).
+    # Remove this once the pass rate is stable and flaky cases are triaged.
+    continue-on-error: true
+    timeout-minutes: 40
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+
+      - name: Install evaluation dependencies
+        run: python -m pip install -r eval/requirements.txt
+
+      - name: Build application jar
+        run: mvn -B -ntp -DskipTests package
+
+      - name: Start dependencies
+        run: docker compose up -d seekdb mongodb nacos
+
+      - name: Wait for dependencies
+        run: |
+          for service in seekdb mongodb nacos; do
+            echo "Waiting for $service ..."
+            for i in $(seq 1 60); do
+              status=$(docker inspect --format='{{.State.Health.Status}}' agent-hub-$service 2>/dev/null || echo missing)
+              if [ "$status" = "healthy" ]; then
+                echo "$service healthy"
+                break
+              fi
+              if [ "$i" = "60" ]; then
+                echo "$service did not become healthy"
+                docker logs agent-hub-$service --tail 50 || true
+                exit 1
+              fi
+              sleep 3
+            done
+          done
+
+      - name: Build application image
+        run: docker build -t agent-hub:eval .
+
+      - name: Start application
+        env:
+          AGENT_MODEL_API_KEY: ${{ secrets.AGENT_MODEL_API_KEY }}
+        run: |
+          if [ -z "$AGENT_MODEL_API_KEY" ]; then
+            echo "::error::AGENT_MODEL_API_KEY secret is not configured; evaluation cannot run."
+            exit 1
+          fi
+          mkdir -p /tmp/agent-hub-shares
+          docker run -d --name agent-hub-app --network host \
+            -v "$PWD/sql:/app/sql:ro" \
+            -e AGENT_MODEL_API_KEY="$AGENT_MODEL_API_KEY" \
+            -e SPRING_PROFILES_ACTIVE=seekdb \
+            -e AGENT_SHARE_DIR=/tmp/agent-hub-shares \
+            -e AGENT_AUTH_SMS_MODE=demo \
+            -e 'SPRING_APPLICATION_JSON={"spring":{"data":{"mongodb":{"uri":"mongodb://127.0.0.1:27017/agent_hub"}},"datasource":{"url":"jdbc:oceanbase://127.0.0.1:2881/demo","username":"root","password":""}}}' \
+            agent-hub:eval
+          for i in $(seq 1 40); do
+            if curl -sf http://127.0.0.1:8080/sign_in.html >/dev/null; then
+              echo "Application is up"
+              exit 0
+            fi
+            sleep 3
+          done
+          echo "Application failed to start"
+          docker logs agent-hub-app --tail 100 || true
+          exit 1
+
+      - name: Run golden set
+        run: python eval/eval_runner.py --url http://localhost:8080 --out eval-report.json
+
+      - name: Upload evaluation report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-report-${{ github.sha }}
+          path: eval-report.json
+          if-no-files-found: warn
+
+      - name: Print summary
+        if: always()
+        run: |
+          if [ -f eval-report.json ]; then
+            python -c 'import json; d=json.load(open("eval-report.json")); print(d["summary"])'
+          fi
