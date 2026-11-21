@@ -2,6 +2,7 @@ package com.riemann.agent.presentation;
 
 import com.riemann.agent.application.ApprovalService;
 import com.riemann.agent.application.ConversationAppService;
+import com.riemann.agent.application.ModelHealthProbe;
 import com.riemann.agent.application.quota.QuotaExceededException;
 import com.riemann.agent.auth.AuthenticatedUser;
 import com.riemann.agent.domain.AccessDeniedException;
@@ -38,19 +39,29 @@ public class AgentChatController {
     private final ConversationAppService appService;
     private final ConversationEventBus eventBus;
     private final ApprovalService approvals;
+    private final ModelHealthProbe probe;
 
     public AgentChatController(ConversationAppService appService, ConversationEventBus eventBus) {
-        this(appService, eventBus, null);
+        this(appService, eventBus, null, null);
+    }
+
+    public AgentChatController(
+            ConversationAppService appService,
+            ConversationEventBus eventBus,
+            ApprovalService approvals) {
+        this(appService, eventBus, approvals, null);
     }
 
     @org.springframework.beans.factory.annotation.Autowired
     public AgentChatController(
             ConversationAppService appService,
             ConversationEventBus eventBus,
-            ApprovalService approvals) {
+            ApprovalService approvals,
+            ModelHealthProbe probe) {
         this.appService = appService;
         this.eventBus = eventBus;
         this.approvals = approvals;
+        this.probe = probe;
     }
 
     /** 批准一次挂起的副作用操作（只有创建者可以）。 */
@@ -89,14 +100,7 @@ public class AgentChatController {
 
         // POST 与 GET 订阅者共享同一个多播 Sink
         Sinks.Many<AgentEvent> sink = eventBus.register(id);
-        Map<String, Object> attributes =
-                request.attachments() == null || request.attachments().isEmpty()
-                        ? Map.of()
-                        : Map.of(
-                                com.riemann.agent.infrastructure.context.AttachmentProcessor
-                                        .ATTR_KEY,
-                                request.attachments());
-        Flux<AgentEvent> events = appService.chat(userId, request.message(), id, attributes);
+        Flux<AgentEvent> events = resolveEvents(userId, request, id);
         // 关键：保留上游订阅句柄。之前只 subscribe 不持有 Disposable，客户端断开时
         // 被取消的只是 sink 的下游，上游仍在跑——Agent 的 ReAct 循环会继续烧 token。
         Disposable upstream =
@@ -154,6 +158,30 @@ public class AgentChatController {
                             // the sink, so a completed turn leaked its whole replay buffer.
                             eventBus.remove(id, sink);
                         });
+    }
+
+    /**
+     * 选择本轮事件源：纯问候（你好 / hello）走模型可用性探针，其余走正常编排。
+     *
+     * <p>探针分支刻意不调用 {@link ConversationAppService#chat}：不建会话、不写历史、不扣配额，
+     * 只回一段固定文案。这样“你好”是零成本心跳，而不是一次完整的 Agent 轮次。
+     */
+    private Flux<AgentEvent> resolveEvents(String userId, ChatRequest request, ConversationId id) {
+        if (probe != null
+                && probe.isEnabled()
+                && ModelHealthProbe.isGreeting(request.message())
+                && (request.attachments() == null || request.attachments().isEmpty())) {
+            log.info("[probe] 会话 {} 命中问候探针，执行模型可用性探测", id.value());
+            return probe.probe(id.value());
+        }
+        Map<String, Object> attributes =
+                request.attachments() == null || request.attachments().isEmpty()
+                        ? Map.of()
+                        : Map.of(
+                                com.riemann.agent.infrastructure.context.AttachmentProcessor
+                                        .ATTR_KEY,
+                                request.attachments());
+        return appService.chat(userId, request.message(), id, attributes);
     }
 
     /**
