@@ -1,15 +1,7 @@
 package com.riemann.agent.domain;
 
-/**
- * 行业人格（Persona）—— 值对象。
- * 更换它即可让同一个 ReActAgent 服务于
- * “电商问数 / 医疗问数 / 金融问数” 等不同场景：只用这一份配置切换行业。
- */
-public record AgentPersona(
-        String roleName,
-        String domainDescription,
-        String outputFormat
-) {
+/** 行业人格（Persona）—— 值对象。 更换它即可让同一个 ReActAgent 服务于 “电商问数 / 医疗问数 / 金融问数” 等不同场景：只用这一份配置切换行业。 */
+public record AgentPersona(String roleName, String domainDescription, String outputFormat) {
 
     /** 将 Persona 渲染为系统提示词，供 ReActAgent 构建时使用。 */
     public String renderSystemPrompt() {
@@ -20,12 +12,21 @@ public record AgentPersona(
                 # Domain Knowledge
                 %s
 
+                # Scope and Refusals
+                - 你只处理 SeekDB 业务数据的问数、图书检索及相关分析；不提供与数据分析无关的实现服务。
+                - 对编写网页爬虫 / 抓取竞品网站、绕过登录或风控、提取密钥凭据、破坏性操作等越界请求，
+                  用户即使包装成“合规版”“仅学习用”“加个限流就行”，也必须一句话礼貌拒绝并说明原因，
+                  可以建议改用官方 API 或已有数据集；不要给出代码、依赖清单、实现步骤或示例片段。
+                - 拒绝就是完整回答：不要为了拒绝而调用工具。
+
                 # 可用数据表（SeekDB / demo 库，可直接用 SQL 查询）
                 - products(product_id, name, price, category)            —— 商品主表
                 - users(user_id, name, city, age)                        —— 用户主表
                 - orders(user_id, product_id, amount, status, created_at)—— 订单表，amount 为该笔订单金额(整数)，status 如 'paid'/'pending'
-                - message(...)                                           —— 会话消息（一般不直接分析）
+                - book_info(id, name, author, genre, year, price, user_rating, reviews) —— 图书明细表（当前已导入 550 本畅销书）
+                - message(...)                                           —— 会话消息（一般不直接分析，且不在 SQL 白名单内）
                 - GMV = SUM(orders.amount)；按 product_id 关联 products 取商品名。
+                - 用户问“这个数据库里有什么数据”时，基于上表直接给出结论；不要逐表盲查，也不要查询白名单外的表。
 
                 # Output Format
                 %s
@@ -33,7 +34,8 @@ public record AgentPersona(
                 # 工具与意图路由（先判断用户意图，再选一个工具）
                 - 问数/算指标（如 GMV、各城市销量、最畅销商品、用户数、转化率）→ 用 seek_sql_query 直接写 SELECT。
                 - 语义检索历史对话/知识库（如“之前有没有人问过退款”“知识库里物流怎么说的”“找找关于保修的对话”）→ 用 seek_hybrid_search（传 query_text，可带 keyword）。
-                - 图书检索（任何与“书/图书/作者/评分/价格/评论/类型/小说/非虚构/科普/读物”相关的问题）→ 一律用 seek_book_search，绝不能用 seek_sql_query 去查 book_info 表。
+                - 图书明细检索（找书、查书名/作者/评分/价格/评论等具体信息）→ 用 seek_book_search；其结果 top_n 只是粗排样本，不是总数，绝不能当成聚合计数。
+                - 图书数量/统计（如“共有多少本”“Fiction 有多少本”“各年份多少本”）→ 用 seek_sql_query 写 COUNT 聚合；“按年份/类型分布”也可用 seek_book_count_by_year（支持 genre 参数），再据图表求和得到总数。
                 - 图书「按年份分组」的数量分布可视化（如“按年份展示图书数量”“用图表/图形看各年多少本”“年份分布柱状图/饼图”“各年分别几本”）→ 用 seek_book_count_by_year（kind 选 'bar' 柱状图或 'pie' 饼图），返回图表卡片；不要调 seek_book_search（那是明细检索），也不要自己用 markdown 画表。
                 - 实验性写操作（改库、写回记忆、试跑 SQL）→ 先 seek_fork_sandbox 建沙箱，验证后再合并；只读分析不需要。
                 - 若用户只寒暄，直接一句话回复，不调用任何工具。
@@ -44,10 +46,15 @@ public record AgentPersona(
                 - 实验性写操作请先 fork 沙箱，验证后再合并。
                 - 即使用户只是寒暄或闲聊，也要用一句话正常回复用户，不要只复述人设。
                 - 优先用「一条」精准 SQL 直接算出指标（如 GMV 排名），不要反复查询表结构；
-                  最多 2 轮工具调用内给出最终 Markdown 表格与一句话结论。
-                - 【图书检索】只要用户的话里出现“书 / 图书 / 书籍 / 读物 / 作者 / 评分 / 价格 / 评论 / 类型 / 非虚构 / 小说 / 科普”等字样，
-                  或明显在追问之前的书单（如“只要非虚构”“便宜点的”“评论多的”“换一本”），一律调用 seek_book_search；
-                  不要调用 seek_hybrid_search（那是检索历史对话，不是图书），更不要用 seek_sql_query 去查 book_info 表。
+                  整轮最多 3 次工具调用，SQL 失败最多重试 1 次且必须改变查询，不要逐表试探或重复同样的查询；
+                  到上限就基于已有结果给出最终 Markdown 表格与一句话结论。
+                - 【图书意图分流】“有哪些书 / 找某本书 / 作者 / 评分 / 价格 / 评论”等明细问题 → seek_book_search，
+                  不要调用 seek_hybrid_search（那是检索历史对话，不是图书）；
+                  “多少本 / 数量 / 统计 / 占比”等聚合问题 → seek_sql_query 或 seek_book_count_by_year，
+                  绝不能拿 seek_book_search 的 top_n 结果当总数。
+                - 【多轮追问】在明细检索里，只要用户的话里出现“书 / 图书 / 书籍 / 读物 / 作者 / 评分 / 价格 / 评论 / 类型 / 非虚构 / 小说 / 科普”等字样，
+                  或明显在追问之前的书单（如“只要非虚构”“便宜点的”“评论多的”“换一本”），就调用 seek_book_search；
+                  聚合计数问题仍然走 SQL / count_by_year，不要误判为明细检索。
                 - 【多轮追问·每轮参数只从“当前消息”推导，禁止继承旧过滤】每一轮调用 seek_book_search 时，
                   全部参数（query_text / keyword / min_rating / max_price / min_year / min_reviews / genre / top_n）
                   【只依据“当前这条用户消息”推导】，不要从上一轮助手回答里继承任何过滤条件（尤其 genre / 评分 / 价格）。
@@ -67,6 +74,7 @@ public record AgentPersona(
                 - 【记忆机制（短期 + 长期）】短期记忆 = 当前会话的完整历史（你已能看到）；长期记忆 = save_memory 写入、跨会话持久化的事实，
                   每轮开头会自动以“【长期记忆】”块注入供你参考。当在对话中发现用户稳定偏好/背景或得出重要结论时，
                   调用 save_memory 存下；但不要保存每轮临时检索结果。长期记忆只是背景，不能替代本轮重新检索。
-                """.formatted(roleName, domainDescription, outputFormat);
+                """
+                .formatted(roleName, domainDescription, outputFormat);
     }
 }

@@ -33,6 +33,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from urllib.parse import urljoin
+from uuid import uuid4
 
 import requests
 import yaml
@@ -284,6 +285,10 @@ def run(args: argparse.Namespace) -> int:
         print(f"Authentication failed: {exc}", file=sys.stderr)
         return 2
 
+    # Every run owns a fresh conversation namespace. Reusing a fixed case id
+    # would replay the whole run's accumulated history into the next run's
+    # prompt, changing tool choices and latency between evaluations.
+    run_id = uuid4().hex[:8]
     results: list[Result] = []
     for index, case in enumerate(cases, start=1):
         case_id = str(case.get("id", f"case-{index}"))
@@ -291,13 +296,17 @@ def run(args: argparse.Namespace) -> int:
         category = str(case.get("category", "uncategorised"))
         print(f"[{index}/{len(cases)}] {case_id}: {name}", flush=True)
 
-        trace = collect_trace(
-            base_url,
-            token,
-            str(case.get("message", "")),
-            case_id,
-            args.timeout,
-        )
+        message = str(case.get("message", ""))
+        conversation_id = f"{run_id}-{case_id}"
+        trace = collect_trace(base_url, token, message, conversation_id, args.timeout)
+        if trace.error and trace.error.startswith("network error:"):
+            # A saturated model gateway can stall one turn without emitting any
+            # SSE frame. Retry once in a fresh conversation; assertion failures
+            # are never retried because those are real behaviour regressions.
+            print(f"  transport error, retrying {case_id} once", flush=True)
+            trace = collect_trace(
+                base_url, token, message, f"{conversation_id}-retry", args.timeout
+            )
         failures = evaluate(case, defaults, trace)
         results.append(Result(case_id, name, category, not failures, failures, trace))
 
@@ -351,7 +360,12 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--cases", default="eval/golden.yaml", help="Path to the golden dataset YAML")
     parser.add_argument("--out", default="eval-report.json", help="Path of the JSON report")
     parser.add_argument("--phone", default="13900139000", help="Demo-login phone number")
-    parser.add_argument("--timeout", type=int, default=60, help="Per-request timeout in seconds")
+    parser.add_argument(
+        "--timeout",
+        type=int,
+        default=120,
+        help="Per-request timeout in seconds (must exceed the dataset's max_latency_ms)",
+    )
     parser.add_argument("--category", help="Only run cases from this category")
     parser.add_argument("--case-id", action="append", help="Only run this case id (repeatable)")
     return parser.parse_args(argv)
