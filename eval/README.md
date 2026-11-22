@@ -42,9 +42,14 @@ Useful flags:
 ```bash
 --category probe          # only probe heartbeat cases
 --case-id probe-zh        # one case (repeatable)
---timeout 90              # per-request timeout in seconds
+--timeout 120             # per-request timeout (default 120s; must exceed max_latency_ms)
 --phone 13900139000       # demo-login phone
 ```
+
+Each run uses a fresh conversation namespace so previous runs cannot leak
+history into the next evaluation. A case that fails only because the HTTP
+stream timed out is retried once in a new conversation; assertion failures are
+never retried.
 
 The process exits `0` when every case passes and `1` otherwise, so it can be
 used as a CI gate once a baseline is established.
