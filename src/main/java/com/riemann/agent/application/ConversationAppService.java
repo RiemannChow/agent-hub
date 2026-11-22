@@ -10,6 +10,7 @@ import com.riemann.agent.domain.Conversation;
 import com.riemann.agent.domain.ConversationId;
 import com.riemann.agent.domain.ConversationRepository;
 import com.riemann.agent.domain.Message;
+import com.riemann.agent.infrastructure.state.CommandBus;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -18,6 +19,8 @@ import java.util.Map;
 import java.util.UUID;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
@@ -34,6 +37,7 @@ public class ConversationAppService {
     private final MemoryExtractor memoryExtractor;
     private final MemoryService memoryService;
     private final AgentQuotaService quota;
+    private final CommandBus commandBus;
 
     public ConversationAppService(
             ConversationRepository repository,
@@ -41,11 +45,39 @@ public class ConversationAppService {
             MemoryExtractor memoryExtractor,
             MemoryService memoryService,
             AgentQuotaService quota) {
+        this(repository, orchestration, memoryExtractor, memoryService, quota, (CommandBus) null);
+    }
+
+    @Autowired
+    public ConversationAppService(
+            ConversationRepository repository,
+            AgentOrchestrationService orchestration,
+            MemoryExtractor memoryExtractor,
+            MemoryService memoryService,
+            AgentQuotaService quota,
+            ObjectProvider<CommandBus> commandBus) {
+        this(
+                repository,
+                orchestration,
+                memoryExtractor,
+                memoryService,
+                quota,
+                commandBus.getIfAvailable());
+    }
+
+    private ConversationAppService(
+            ConversationRepository repository,
+            AgentOrchestrationService orchestration,
+            MemoryExtractor memoryExtractor,
+            MemoryService memoryService,
+            AgentQuotaService quota,
+            CommandBus commandBus) {
         this.repository = repository;
         this.orchestration = orchestration;
         this.memoryExtractor = memoryExtractor;
         this.memoryService = memoryService;
         this.quota = quota;
+        this.commandBus = commandBus;
     }
 
     /**
@@ -220,7 +252,16 @@ public class ConversationAppService {
      * @return true 表示确实中断了一个在跑的轮次
      */
     public boolean cancelTurn(String conversationId) {
-        return orchestration.cancel(conversationId);
+        if (orchestration.cancel(conversationId)) {
+            return true;
+        }
+        // The turn may be running on another replica. Publish the command there and let
+        // TurnCommandListener interrupt it; best effort, since the local pod cannot confirm.
+        if (commandBus != null && conversationId != null) {
+            commandBus.publishCancel(conversationId);
+            return true;
+        }
+        return false;
     }
 
     // ===================== 历史记录查询（侧边栏用） =====================

@@ -57,6 +57,16 @@ spring:
       uri: mongodb://127.0.0.1:27017/demo
 
 ---
+# ============ Redis（agent.state.backend=redis 时使用） ============
+spring:
+  data:
+    redis:
+      host: ${REDIS_HOST:127.0.0.1}
+      port: ${REDIS_PORT:6379}
+      password: ${REDIS_PASSWORD:}
+      timeout: 3s
+
+---
 # ============ Agent Persona（切换行业只需改这里） ============
 # 该文档不带 on-profile，对所有 profile 均生效（seekdb / mongo 都能读到 agent.*）
 agent:
@@ -168,6 +178,13 @@ agent:
     enabled: ${AGENT_QUOTA_ENABLED:true}
     max-concurrent-turns-per-user: ${AGENT_QUOTA_MAX_CONCURRENT:2}
     daily-token-limit: ${AGENT_QUOTA_DAILY_TOKENS:500000}
+  # ============ 多实例共享状态（默认 local，保持单实例零依赖） ============
+  # redis 模式下配额、A2A 任务/推送配置、审批、在跑轮次、签名 nonce 与 SSE 回放
+  # 全部通过 Redis 共享；stop/cancel 与审批决策通过 Redis pub/sub 路由到持有资源的实例。
+  state:
+    backend: ${AGENT_STATE_BACKEND:local}
+    key-prefix: ${AGENT_STATE_KEY_PREFIX:agent-hub}
+    command-timeout: ${AGENT_STATE_COMMAND_TIMEOUT:3s}
   # ============ 图书混合检索（Java 版） ============
   books:
     # 数据集文件名（sql/ 目录或 classpath 均可），对应 Kaggle: Amazon Top 50 Bestselling Books 2009-2019

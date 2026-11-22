@@ -50,6 +50,20 @@ services:
       retries: 12
       start_period: 20s
 
+  # ============ Redis（agent.state.backend=redis 时共享运行时状态） ============
+  redis:
+    image: redis:7-alpine
+    container_name: agent-hub-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
   # ============ Neo4j（OceanBase 知识图谱后端，端口 7474/7687） ============
   neo4j:
     image: neo4j:5.23-community
@@ -106,6 +120,7 @@ services:
 
 volumes:
   seekdb_data:
+  redis_data:
   mongo_data:
   neo4j_data:
   neo4j_logs:

@@ -3,6 +3,8 @@ package com.riemann.agent.presentation.a2a;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.riemann.agent.infrastructure.a2a.A2aEndpointGuard;
 import com.riemann.agent.infrastructure.a2a.A2aPushProperties;
+import com.riemann.agent.infrastructure.state.LocalPushConfigStore;
+import com.riemann.agent.infrastructure.state.PushConfigStore;
 import com.riemann.agent.presentation.a2a.protocol.PushNotificationConfig;
 import com.riemann.agent.presentation.a2a.protocol.Task;
 import java.net.URI;
@@ -14,11 +16,11 @@ import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
-import java.util.concurrent.ConcurrentHashMap;
 import javax.crypto.Mac;
 import javax.crypto.spec.SecretKeySpec;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 import org.springframework.web.reactive.function.client.WebClient;
 
@@ -41,19 +43,29 @@ public class A2aPushNotificationService {
     private final A2aEndpointGuard endpointGuard;
     private final WebClient webClient;
     private final ObjectMapper objectMapper;
-    private final Map<String, ConcurrentHashMap<String, PushNotificationConfig>> configs =
-            new ConcurrentHashMap<>();
+    private final PushConfigStore configs;
 
     public A2aPushNotificationService(
             A2aTaskStore taskStore,
             A2aPushProperties props,
             ObjectMapper objectMapper,
             WebClient.Builder webClientBuilder) {
+        this(taskStore, props, objectMapper, webClientBuilder, new LocalPushConfigStore());
+    }
+
+    @Autowired
+    public A2aPushNotificationService(
+            A2aTaskStore taskStore,
+            A2aPushProperties props,
+            ObjectMapper objectMapper,
+            WebClient.Builder webClientBuilder,
+            PushConfigStore configs) {
         this.taskStore = taskStore;
         this.props = props;
         this.objectMapper = objectMapper;
         this.endpointGuard = new A2aEndpointGuard(props.getAllowedHosts());
         this.webClient = webClientBuilder.build();
+        this.configs = configs;
     }
 
     /** 注册/替换通知配置。任务不属于该调用方时抛 IllegalArgumentException。 */
@@ -63,26 +75,20 @@ public class A2aPushNotificationService {
             throw new IllegalArgumentException("pushNotificationConfig.url is required");
         }
         URI uri = endpointGuard.validate(config.url());
-        ConcurrentHashMap<String, PushNotificationConfig> forTask =
-                configs.computeIfAbsent(taskId, k -> new ConcurrentHashMap<>());
-        if (!forTask.containsKey(config.id()) && forTask.size() >= props.getMaxConfigsPerTask()) {
-            throw new IllegalArgumentException("Too many push notification configs for this task");
-        }
-        forTask.put(
-                config.id(),
-                new PushNotificationConfig(config.id(), uri.toString(), config.token()));
+        configs.set(
+                taskId,
+                new PushNotificationConfig(config.id(), uri.toString(), config.token()),
+                props.getMaxConfigsPerTask());
     }
 
     public Optional<PushNotificationConfig> get(String owner, String taskId, String configId) {
         requireOwned(owner, taskId);
-        return Optional.ofNullable(configs.get(taskId))
-                .flatMap(m -> Optional.ofNullable(m.get(configId == null ? "default" : configId)));
+        return configs.get(taskId, configId);
     }
 
     public List<PushNotificationConfig> list(String owner, String taskId) {
         requireOwned(owner, taskId);
-        ConcurrentHashMap<String, PushNotificationConfig> forTask = configs.get(taskId);
-        return forTask == null ? List.of() : List.copyOf(forTask.values());
+        return configs.list(taskId);
     }
 
     /**
@@ -90,16 +96,7 @@ public class A2aPushNotificationService {
      */
     public boolean delete(String owner, String taskId, String configId) {
         requireOwned(owner, taskId);
-        ConcurrentHashMap<String, PushNotificationConfig> forTask = configs.get(taskId);
-        if (forTask == null) {
-            return false;
-        }
-        String key = configId == null ? "default" : configId;
-        boolean removed = forTask.remove(key) != null;
-        if (forTask.isEmpty()) {
-            configs.remove(taskId, forTask);
-        }
-        return removed;
+        return configs.delete(taskId, configId);
     }
 
     /** 任务状态变化时调用；对所有已注册配置并发投递，失败不影响调用方。 */
@@ -107,8 +104,8 @@ public class A2aPushNotificationService {
         if (!props.isEnabled() || task == null) {
             return;
         }
-        ConcurrentHashMap<String, PushNotificationConfig> forTask = configs.get(task.id());
-        if (forTask == null || forTask.isEmpty()) {
+        List<PushNotificationConfig> forTask = configs.list(task.id());
+        if (forTask.isEmpty()) {
             return;
         }
         String body;
@@ -119,7 +116,7 @@ public class A2aPushNotificationService {
             return;
         }
         String timestamp = Long.toString(Instant.now().getEpochSecond());
-        for (PushNotificationConfig config : forTask.values()) {
+        for (PushNotificationConfig config : forTask) {
             String secret =
                     config.token() != null && !config.token().isBlank()
                             ? config.token()

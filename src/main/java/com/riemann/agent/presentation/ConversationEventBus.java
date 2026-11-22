@@ -2,6 +2,7 @@ package com.riemann.agent.presentation;
 
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.ConversationId;
+import com.riemann.agent.infrastructure.state.EventBusBridge;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
@@ -10,6 +11,8 @@ import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import reactor.core.publisher.Flux;
@@ -48,16 +51,38 @@ public class ConversationEventBus {
 
     private final Map<String, Entry> sinks = new ConcurrentHashMap<>();
     private final ConversationEventBusProperties props;
+    private final EventBusBridge bridge;
 
     public ConversationEventBus(ConversationEventBusProperties props) {
+        this(props, (EventBusBridge) null);
+    }
+
+    private ConversationEventBus(ConversationEventBusProperties props, EventBusBridge bridge) {
         this.props = props;
+        this.bridge = bridge;
+    }
+
+    @Autowired
+    public ConversationEventBus(
+            ConversationEventBusProperties props, ObjectProvider<EventBusBridge> bridge) {
+        this(props, bridge.getIfAvailable());
     }
 
     /** A sink plus the timestamps used for TTL and oldest-first eviction. */
-    private record Entry(Sinks.Many<AgentEvent> sink, Instant createdAt, Instant expiresAt) {
+    private record Entry(
+            Sinks.Many<AgentEvent> sink,
+            Instant createdAt,
+            Instant expiresAt,
+            EventBusBridge.Handle bridge) {
 
         boolean expired(Instant now) {
             return !now.isBefore(expiresAt);
+        }
+
+        void disposeBridge() {
+            if (bridge != null) {
+                bridge.dispose();
+            }
         }
     }
 
@@ -66,9 +91,12 @@ public class ConversationEventBus {
         Instant now = Instant.now();
         Duration ttl = props.getTtl();
         Sinks.Many<AgentEvent> sink = Sinks.many().replay().limit(props.getMaxReplayEvents());
-        Entry previous = sinks.put(id.value(), new Entry(sink, now, now.plus(ttl)));
+        EventBusBridge.Handle handle =
+                bridge == null ? null : bridge.attach(id.value(), sink, true);
+        Entry previous = sinks.put(id.value(), new Entry(sink, now, now.plus(ttl), handle));
         if (previous != null) {
             previous.sink().tryEmitComplete();
+            previous.disposeBridge();
         }
         sweep(now);
         evictIfNeeded();
@@ -78,12 +106,26 @@ public class ConversationEventBus {
     /** Returns the current turn's stream, or an error if it is missing / expired. */
     public Flux<AgentEvent> flux(ConversationId id) {
         Entry entry = sinks.get(id.value());
+        if (entry == null && bridge != null) {
+            // A GET /stream may land on a different pod than POST /chat. Create a replay-only
+            // sink fed by Redis pub/sub instead of failing the reconnect.
+            Instant now = Instant.now();
+            Sinks.Many<AgentEvent> sink = Sinks.many().replay().limit(props.getMaxReplayEvents());
+            EventBusBridge.Handle handle = bridge.attach(id.value(), sink, false);
+            entry =
+                    sinks.putIfAbsent(
+                            id.value(), new Entry(sink, now, now.plus(props.getTtl()), handle));
+            if (entry != null) {
+                handle.dispose();
+            }
+        }
         if (entry == null) {
             return Flux.error(new IllegalStateException("no active stream for " + id.value()));
         }
         if (entry.expired(Instant.now())) {
             if (sinks.remove(id.value(), entry)) {
                 entry.sink().tryEmitComplete();
+                entry.disposeBridge();
             }
             return Flux.error(new IllegalStateException("no active stream for " + id.value()));
         }
@@ -101,6 +143,7 @@ public class ConversationEventBus {
         Entry entry = sinks.get(id.value());
         if (entry != null && entry.sink() == sink && sinks.remove(id.value(), entry)) {
             sink.tryEmitComplete();
+            entry.disposeBridge();
         }
     }
 
@@ -125,6 +168,7 @@ public class ConversationEventBus {
                                 return false;
                             }
                             e.getValue().sink().tryEmitComplete();
+                            e.getValue().disposeBridge();
                             return true;
                         });
         int removed = before - sinks.size();
@@ -148,6 +192,7 @@ public class ConversationEventBus {
             Map.Entry<String, Entry> oldest = ordered.get(i);
             if (sinks.remove(oldest.getKey(), oldest.getValue())) {
                 oldest.getValue().sink().tryEmitComplete();
+                oldest.getValue().disposeBridge();
             }
         }
         log.debug("[SSE] Active streams exceeded cap {}, evicted {} oldest", max, toRemove);
