@@ -2,7 +2,12 @@
 # One ID per line; lines starting with '#' and blank lines are ignored.
 # A NEW id in osv-report.json fails the build. Fixing a vulnerability removes
 # its id from the report; remove it here too only after verifying the fix.
-# Count: 147
+# Count: 148
+# GHSA-xg2j-3hj6-pc24 (CVE-2026-41719): spring-data-keyvalue 3.3.x arrives transitively
+# with Spring Boot 3.3's reactive Redis starter. This app uses RedisTemplate/pubsub only;
+# no key-value repository or Sort expression evaluation is reachable from user input.
+# No patched 3.3.x exists (the advisory fixes 3.5.12/4.0.6), so this is baselined until
+# the Spring Boot upgrade. Re-check when upgrading Boot.
 GHSA-25qh-j22f-pwp8
 GHSA-2gx3-rcp4-g85q
 GHSA-389x-839f-4rhx
@@ -128,6 +133,7 @@ GHSA-wxpp-56q6-5pcg
 GHSA-x23c-287f-qqv5
 GHSA-x33g-cr3x-6449
 GHSA-x4gw-5cx5-pgmh
+GHSA-xg2j-3hj6-pc24
 GHSA-xgmm-8j9v-c9wx
 GHSA-xmv7-r254-6q78
 GHSA-xq3w-v528-46rv
