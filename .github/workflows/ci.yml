@@ -77,9 +77,31 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    # Service containers avoid Testcontainers' Docker client API compatibility issues
+    # on newer runners. Locally, SharedStateIT starts the same images via Testcontainers.
+    services:
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
     env:
-      # docker-java defaults to API 1.32; current GitHub runners require >= 1.40.
-      DOCKER_API_VERSION: "1.44"
+      IT_REDIS_HOST: 127.0.0.1
+      IT_REDIS_PORT: 6379
+      IT_MONGO_URI: mongodb://127.0.0.1:27017/agent_hub_it
     steps:
       - name: Checkout
         uses: actions/checkout@v4

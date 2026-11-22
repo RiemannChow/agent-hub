@@ -35,6 +35,7 @@ import java.time.Duration;
 import java.time.Instant;
 import java.util.List;
 import java.util.Map;
+import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
@@ -47,31 +48,64 @@ import org.springframework.test.context.DynamicPropertySource;
 import org.springframework.test.web.reactive.server.WebTestClient;
 import org.testcontainers.containers.GenericContainer;
 import org.testcontainers.containers.MongoDBContainer;
-import org.testcontainers.junit.jupiter.Container;
-import org.testcontainers.junit.jupiter.Testcontainers;
 import reactor.core.publisher.Sinks;
 import reactor.test.StepVerifier;
 
-/** Boots the real Spring context against Redis/Mongo and verifies cross-replica state sharing. */
-@Testcontainers
+/**
+ * Boots the real Spring context against Redis/Mongo and verifies cross-replica state sharing.
+ *
+ * <p>Locally the containers are started by Testcontainers. CI sets IT_REDIS_HOST/PORT and
+ * IT_MONGO_URI to use GitHub service containers instead, avoiding Docker client compatibility
+ * issues on newer runners.
+ */
 @SpringBootTest(webEnvironment = SpringBootTest.WebEnvironment.RANDOM_PORT)
 @ActiveProfiles("seekdb")
 class SharedStateIT {
 
-    @Container static final MongoDBContainer MONGO = new MongoDBContainer("mongo:7");
-
-    @Container
-    static final GenericContainer<?> REDIS =
-            new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
+    private static MongoDBContainer mongo;
+    private static GenericContainer<?> redisContainer;
 
     private static final String KEY_PREFIX = "it-" + System.nanoTime();
 
+    @AfterAll
+    static void stopContainers() {
+        if (redisContainer != null) {
+            redisContainer.stop();
+        }
+        if (mongo != null) {
+            mongo.stop();
+        }
+    }
+
+    private static String envOrBlank(String name) {
+        String value = System.getenv(name);
+        return value == null ? "" : value;
+    }
+
     @DynamicPropertySource
     static void properties(DynamicPropertyRegistry registry) {
-        registry.add("spring.data.mongodb.uri", MONGO::getReplicaSetUrl);
+        String redisHost = envOrBlank("IT_REDIS_HOST");
+        String redisPort = envOrBlank("IT_REDIS_PORT");
+        if (redisHost.isBlank()) {
+            redisContainer = new GenericContainer<>("redis:7.2-alpine").withExposedPorts(6379);
+            redisContainer.start();
+            redisHost = redisContainer.getHost();
+            redisPort = String.valueOf(redisContainer.getMappedPort(6379));
+        }
+        String mongoUri = envOrBlank("IT_MONGO_URI");
+        if (mongoUri.isBlank()) {
+            mongo = new MongoDBContainer("mongo:7");
+            mongo.start();
+            mongoUri = mongo.getReplicaSetUrl();
+        }
+
+        final String finalMongoUri = mongoUri;
+        final String finalRedisHost = redisHost;
+        final int finalRedisPort = Integer.parseInt(redisPort);
+        registry.add("spring.data.mongodb.uri", () -> finalMongoUri);
         registry.add("spring.data.mongodb.auto-index-creation", () -> false);
-        registry.add("spring.data.redis.host", REDIS::getHost);
-        registry.add("spring.data.redis.port", () -> REDIS.getMappedPort(6379));
+        registry.add("spring.data.redis.host", () -> finalRedisHost);
+        registry.add("spring.data.redis.port", () -> finalRedisPort);
         registry.add("agent.state.backend", () -> "redis");
         registry.add("agent.state.key-prefix", () -> KEY_PREFIX);
         registry.add("agent.quota.max-concurrent-turns-per-user", () -> 1);
