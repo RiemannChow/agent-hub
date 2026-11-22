@@ -1,5 +1,7 @@
-# replicas=1 is intentional: quotas, sandbox state, the SSE event bus and the A2A task
-# store are still process-local. Scale out only after moving them to Redis.
+# replicas=1 is the safe default. Shared runtime state (quota, A2A tasks, approvals,
+# SSE replay, signature nonces) is local by default; set AGENT_STATE_BACKEND=redis
+# and point REDIS_HOST at a Redis service before scaling out. Sandbox state is
+# scoped to a single turn and does not need to be shared.
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -38,6 +40,11 @@ spec:
               value: http
             - name: AGENT_WECHAT_DEMO_CONFIRM
               value: "false"
+            # Switch to `redis` before increasing replicas; requires a reachable Redis service.
+            - name: AGENT_STATE_BACKEND
+              value: local
+            - name: REDIS_HOST
+              value: redis
           envFrom:
             - secretRef:
                 name: agent-hub-secret

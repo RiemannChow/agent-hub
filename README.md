@@ -113,7 +113,14 @@ export AGENT_MODEL_API_KEY=sk-xxxxxxxxxxxxxxxx
 mvn clean package -DskipTests
 ```
 
-### 4. Run
+### 4. Test
+
+```bash
+mvn verify                    # unit tests + quality gates
+mvn verify -Pintegration      # adds Testcontainers ITs (requires Docker)
+```
+
+### 5. Run
 
 ```bash
 java -jar target/agent-hub-1.0.0.jar
@@ -121,7 +128,7 @@ java -jar target/agent-hub-1.0.0.jar
 mvn spring-boot:run
 ```
 
-### 5. Open the UI
+### 6. Open the UI
 
 Visit `http://localhost:8080/chat.html` (sign in via OTP or WeChat QR first).
 
@@ -132,6 +139,13 @@ Visit `http://localhost:8080/chat.html` (sign in via OTP or WeChat QR first).
 | `seekdb` (default) | E-commerce analytics over SeekDB + MongoDB. |
 | `mongo`  | Same app, MongoDB as the primary repository. |
 | `oceanbase` | Neo4j-backed OceanBase knowledge-graph Q&A. |
+
+### Multi-instance state
+
+The default `local` backend keeps quota counters, A2A tasks and approvals in process. To run more
+than one replica, set `AGENT_STATE_BACKEND=redis` and `REDIS_HOST`/`REDIS_PORT`; quota, A2A tasks,
+push configs, approvals, active turns, signature nonces and SSE replay are then shared, and
+stop/approval commands are routed to the replica that owns the resource.
 
 ```bash
 java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
