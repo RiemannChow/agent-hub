@@ -77,6 +77,9 @@ jobs:
   integration:
     name: Integration Tests
     runs-on: ubuntu-latest
+    env:
+      # docker-java defaults to API 1.32; current GitHub runners require >= 1.40.
+      DOCKER_API_VERSION: "1.44"
     steps:
       - name: Checkout
         uses: actions/checkout@v4
