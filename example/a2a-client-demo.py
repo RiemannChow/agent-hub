@@ -20,17 +20,48 @@ a2a-client-demo.py — 扮演「另一个 A2A 智能体」，演示如何发现�
 
   # 跳过发现，直接指向某个实例的 Agent Card
   python3 a2a-client-demo.py --card-url http://localhost:8081/.well-known/agent.json --query "你好"
+
+  # 对端开启鉴权时（AGENT_A2A_SHARED_SECRET），用同一密钥签名所有 /a2a 请求
+  A2A_SHARED_SECRET="$AGENT_A2A_SHARED_SECRET" A2A_AGENT_ID="demo-agent" \\
+    python3 a2a-client-demo.py --query "你好"
 """
 
 import argparse
+import hashlib
+import hmac
 import json
+import os
 import sys
+import time
 import urllib.request
 import urllib.error
+from urllib.parse import urlparse
 
 DEFAULT_NACOS = "http://localhost:8848/nacos"
 DEFAULT_SERVICE = "agent-hub"
 HTTP_TIMEOUT = 120
+
+
+def signed_headers(method, url, data):
+    """Build the HMAC headers required by A2aAuthenticationFilter.
+
+    Signing is enabled only when A2A_SHARED_SECRET is set. The canonical string matches
+    A2aSignature: method / path / timestamp / agentId / sha256(body).
+    """
+    secret = os.environ.get("A2A_SHARED_SECRET", "")
+    if not secret or method != "POST":
+        return {}
+    agent_id = os.environ.get("A2A_AGENT_ID", "a2a-client-demo")
+    timestamp = str(int(time.time()))
+    canonical = "\n".join(
+        [method, urlparse(url).path, timestamp, agent_id, hashlib.sha256(data).hexdigest()]
+    )
+    signature = hmac.new(secret.encode("utf-8"), canonical.encode("utf-8"), hashlib.sha256).hexdigest()
+    return {
+        "X-Agent-Id": agent_id,
+        "X-Agent-Timestamp": timestamp,
+        "X-Agent-Signature": signature,
+    }
 
 
 def _http(method, url, body=None, accept="application/json", timeout=HTTP_TIMEOUT):
@@ -39,6 +70,8 @@ def _http(method, url, body=None, accept="application/json", timeout=HTTP_TIMEOU
     req = urllib.request.Request(url, data=data, method=method)
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", accept)
+    for name, value in signed_headers(method, url, data or b"").items():
+        req.add_header(name, value)
     try:
         with urllib.request.urlopen(req, timeout=timeout) as resp:
             raw = resp.read().decode("utf-8")
@@ -121,6 +154,8 @@ def call_stream(endpoint, text):
     req = urllib.request.Request(endpoint, data=data, method="POST")
     req.add_header("Content-Type", "application/json")
     req.add_header("Accept", "text/event-stream")
+    for name, value in signed_headers("POST", endpoint, data).items():
+        req.add_header(name, value)
 
     task_id = None
     print("  [SSE] 开始接收流式事件：")

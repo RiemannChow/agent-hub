@@ -42,7 +42,8 @@ public class A2aAgentCardProvider {
                 persona.domainDescription(),
                 publicUrl,
                 version,
-                new AgentCapabilities(true, pushProperties.isEnabled(), false), // streaming + push
+                // streaming + push + state transition history (used by tasks/resubscribe)
+                new AgentCapabilities(true, pushProperties.isEnabled(), true),
                 List.of("text"),
                 List.of("text"),
                 defaultSkills());

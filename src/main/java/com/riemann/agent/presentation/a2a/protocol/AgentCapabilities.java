@@ -5,6 +5,6 @@ public record AgentCapabilities(
         boolean streaming, boolean pushNotifications, boolean stateTransitionHistory) {
 
     public static AgentCapabilities defaults() {
-        return new AgentCapabilities(true, true, false);
+        return new AgentCapabilities(true, true, true);
     }
 }

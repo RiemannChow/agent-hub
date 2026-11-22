@@ -17,6 +17,7 @@ import com.riemann.agent.presentation.a2a.protocol.PushNotificationConfig;
 import com.riemann.agent.presentation.a2a.protocol.Task;
 import com.riemann.agent.presentation.a2a.protocol.TaskArtifactUpdateEvent;
 import com.riemann.agent.presentation.a2a.protocol.TaskState;
+import com.riemann.agent.presentation.a2a.protocol.TaskStateTransition;
 import com.riemann.agent.presentation.a2a.protocol.TaskStatus;
 import com.riemann.agent.presentation.a2a.protocol.TaskStatusUpdateEvent;
 import com.riemann.agent.presentation.a2a.protocol.TextPart;
@@ -145,14 +146,16 @@ public class A2aRpcController {
         if (req == null) {
             return Flux.just(errorSse(null, JsonRpcError.PARSE_ERROR, "Parse error"));
         }
-        if (!"message/stream".equals(req.method())) {
+        if (!"message/stream".equals(req.method()) && !"tasks/resubscribe".equals(req.method())) {
             return Flux.just(
                     errorSse(
                             req.id(),
                             JsonRpcError.INVALID_REQUEST,
                             "Use Accept: application/json for " + req.method()));
         }
-        return messageStream(req, agentId);
+        return "tasks/resubscribe".equals(req.method())
+                ? taskResubscribe(req, agentId)
+                : messageStream(req, agentId);
     }
 
     // ===================== message/send =====================
@@ -170,12 +173,16 @@ public class A2aRpcController {
         // 同一个 taskId 再次 send = input-required 后补参：把之前的 history 带回来，
         // 让对端看到完整的提问/追问/补充链路，而不是只有最后一条消息。
         List<Message> history = new ArrayList<>();
+        List<TaskStateTransition> transitions = new ArrayList<>();
         taskStore
                 .get(ctx.taskId(), agentId)
                 .ifPresent(
                         previous -> {
                             if (previous.history() != null) {
                                 history.addAll(previous.history());
+                            }
+                            if (previous.stateTransitionHistory() != null) {
+                                transitions.addAll(previous.stateTransitionHistory());
                             }
                         });
         history.add(ctx.message());
@@ -196,7 +203,7 @@ public class A2aRpcController {
                                 }
                             }
                             Answer answer = parseAnswer(sb.toString());
-                            Task task = buildTask(ctx, history, answer);
+                            Task task = buildTask(ctx, history, answer, transitions);
                             // 记录 conversationId 与已验签的 owner：后续 tasks/cancel 才能定位到
                             // 真正在跑的那一轮，且别的对端无法读到/取消这条任务
                             taskStore.put(task, ctx.conversationId(), agentId);
@@ -225,6 +232,7 @@ public class A2aRpcController {
                     errorSse(req.id(), JsonRpcError.INVALID_PARAMS, depthMessage(ctx.depth())));
         }
         List<Message> history = new ArrayList<>();
+        List<TaskStateTransition> transitions = new ArrayList<>();
         taskStore
                 .get(ctx.taskId(), agentId)
                 .ifPresent(
@@ -232,10 +240,14 @@ public class A2aRpcController {
                             if (previous.history() != null) {
                                 history.addAll(previous.history());
                             }
+                            if (previous.stateTransitionHistory() != null) {
+                                transitions.addAll(previous.stateTransitionHistory());
+                            }
                         });
         history.add(ctx.message());
         AtomicReference<StringBuilder> acc = new AtomicReference<>(new StringBuilder());
 
+        transitions.add(TaskStateTransition.of(TaskState.working, null));
         TaskStatusUpdateEvent started =
                 new TaskStatusUpdateEvent(
                         ctx.contextId(), ctx.taskId(), TaskStatus.of(TaskState.working));
@@ -269,7 +281,7 @@ public class A2aRpcController {
                                         return Mono.just((Object) chunk);
                                     } else if (e instanceof AgentEvent.Completed) {
                                         Answer answer = parseAnswer(acc.get().toString());
-                                        Task task = buildTask(ctx, history, answer);
+                                        Task task = buildTask(ctx, history, answer, transitions);
                                         taskStore.put(task, ctx.conversationId(), agentId);
                                         pushService.notify(task);
                                         TaskArtifactUpdateEvent last =
@@ -309,6 +321,60 @@ public class A2aRpcController {
                                     errorSse(
                                             req.id(), JsonRpcError.INTERNAL_ERROR, e.getMessage()));
                         });
+    }
+
+    // ===================== tasks/resubscribe =====================
+
+    /**
+     * Replays a task's last known status transitions and artifacts over SSE, so a client that
+     * reconnects on another replica can still recover the outcome without restarting the turn.
+     */
+    private Flux<ServerSentEvent<String>> taskResubscribe(JsonRpcRequest req, String owner) {
+        String taskId = textParam(req, "id");
+        if (taskId == null) {
+            return Flux.just(errorSse(req.id(), JsonRpcError.INVALID_PARAMS, "Missing params.id"));
+        }
+        Task task = taskStore.get(taskId, owner).orElse(null);
+        if (task == null) {
+            return Flux.just(
+                    errorSse(req.id(), JsonRpcError.INVALID_PARAMS, "Task not found: " + taskId));
+        }
+        List<TaskStateTransition> transitions = task.stateTransitionHistory();
+        if (transitions == null || transitions.isEmpty()) {
+            transitions =
+                    List.of(
+                            new TaskStateTransition(
+                                    task.status() == null
+                                            ? TaskState.unknown
+                                            : task.status().state(),
+                                    task.status() == null ? null : task.status().timestamp(),
+                                    task.status() == null ? null : task.status().message()));
+        }
+        List<Object> events = new ArrayList<>();
+        for (int i = 0; i < transitions.size(); i++) {
+            TaskStateTransition transition = transitions.get(i);
+            TaskStatus status =
+                    new TaskStatus(
+                            transition.state(), transition.message(), transition.timestamp());
+            events.add(
+                    i == transitions.size() - 1
+                            ? TaskStatusUpdateEvent.last(task.contextId(), taskId, status)
+                            : new TaskStatusUpdateEvent(task.contextId(), taskId, status));
+        }
+        if (task.artifacts() != null) {
+            task.artifacts()
+                    .forEach(
+                            artifact ->
+                                    events.add(
+                                            TaskArtifactUpdateEvent.last(
+                                                    task.contextId(), taskId, artifact)));
+        }
+        return Flux.fromIterable(events)
+                .map(
+                        event ->
+                                ServerSentEvent.<String>builder()
+                                        .data(json(JsonRpcResponse.success(req.id(), event)))
+                                        .build());
     }
 
     // ===================== tasks/get & tasks/cancel =====================
@@ -455,18 +521,22 @@ public class A2aRpcController {
                         taskStore.computeIfPresent(
                                 id,
                                 owner,
-                                t ->
-                                        new Task(
-                                                t.id(),
-                                                t.contextId(),
-                                                TaskStatus.of(TaskState.canceled),
-                                                t.artifacts(),
-                                                t.history(),
-                                                Map.of(
-                                                        "canceled",
-                                                        true,
-                                                        "interrupted",
-                                                        interrupted))))
+                                t -> {
+                                    List<TaskStateTransition> transitions = new ArrayList<>();
+                                    if (t.stateTransitionHistory() != null) {
+                                        transitions.addAll(t.stateTransitionHistory());
+                                    }
+                                    transitions.add(
+                                            TaskStateTransition.of(TaskState.canceled, null));
+                                    return new Task(
+                                            t.id(),
+                                            t.contextId(),
+                                            TaskStatus.of(TaskState.canceled),
+                                            t.artifacts(),
+                                            t.history(),
+                                            Map.of("canceled", true, "interrupted", interrupted),
+                                            List.copyOf(transitions));
+                                }))
                 .map(
                         task -> {
                             pushService.notify(task);
@@ -596,18 +666,28 @@ public class A2aRpcController {
         return new Answer(before, question.isBlank() ? "请补充必要信息后继续。" : question);
     }
 
-    private Task buildTask(SendContext ctx, List<Message> history, Answer answer) {
+    private Task buildTask(
+            SendContext ctx,
+            List<Message> history,
+            Answer answer,
+            List<TaskStateTransition> previous) {
         TaskStatus status =
                 answer.question() == null
                         ? TaskStatus.of(TaskState.completed)
                         : TaskStatus.of(TaskState.input_required, answer.question());
+        List<TaskStateTransition> transitions = new ArrayList<>();
+        if (previous != null) {
+            transitions.addAll(previous);
+        }
+        transitions.add(TaskStateTransition.of(status.state(), answer.question()));
         return new Task(
                 ctx.taskId(),
                 ctx.contextId(),
                 status,
                 List.of(Artifact.text("artifact-0", answer.text(), 0, false, true)),
                 history,
-                null);
+                null,
+                List.copyOf(transitions));
     }
 
     /** 模型/工具异常时把任务落到 failed，并通知已注册的对端。 */
@@ -619,7 +699,8 @@ public class A2aRpcController {
                         TaskStatus.of(TaskState.failed, error),
                         List.of(),
                         history,
-                        null);
+                        null,
+                        List.of(TaskStateTransition.of(TaskState.failed, error)));
         taskStore.put(failed, ctx.conversationId(), owner);
         pushService.notify(failed);
     }
