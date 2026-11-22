@@ -2,10 +2,11 @@ package com.riemann.agent.auth;
 
 import com.riemann.agent.infrastructure.a2a.A2aAuthProperties;
 import com.riemann.agent.infrastructure.a2a.A2aSignature;
+import com.riemann.agent.infrastructure.state.LocalNonceStore;
+import com.riemann.agent.infrastructure.state.NonceStore;
 import java.nio.charset.StandardCharsets;
 import java.time.Instant;
-import java.util.Map;
-import java.util.concurrent.ConcurrentHashMap;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.core.annotation.Order;
 import org.springframework.core.io.buffer.DataBuffer;
 import org.springframework.core.io.buffer.DataBufferUtils;
@@ -45,10 +46,16 @@ public class A2aAuthenticationFilter implements WebFilter {
     private static final String AGENT_ID_PATTERN = "[A-Za-z0-9._:-]{1,128}";
 
     private final A2aAuthProperties props;
-    private final Map<String, Long> seenSignatures = new ConcurrentHashMap<>();
+    private final NonceStore nonces;
 
     public A2aAuthenticationFilter(A2aAuthProperties props) {
+        this(props, new LocalNonceStore());
+    }
+
+    @Autowired
+    public A2aAuthenticationFilter(A2aAuthProperties props, NonceStore nonces) {
         this.props = props;
+        this.nonces = nonces;
     }
 
     @Override
@@ -130,10 +137,8 @@ public class A2aAuthenticationFilter implements WebFilter {
 
     /** Returns false when the exact signature was already used inside the skew window. */
     private boolean registerNonce(String signature) {
-        long now = Instant.now().getEpochSecond();
         long maxAge = props.getAllowedSkew().getSeconds() * 2 + 60;
-        seenSignatures.entrySet().removeIf(e -> now - e.getValue() > maxAge);
-        return seenSignatures.putIfAbsent(signature, now) == null;
+        return nonces.register(signature, maxAge);
     }
 
     private static byte[] toBytes(DataBuffer buffer) {

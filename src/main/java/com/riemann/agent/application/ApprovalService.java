@@ -1,5 +1,11 @@
 package com.riemann.agent.application;
 
+import com.riemann.agent.infrastructure.state.ApprovalStore;
+import com.riemann.agent.infrastructure.state.ApprovalStore.ApprovalMetadata;
+import com.riemann.agent.infrastructure.state.ApprovalStore.Claim;
+import com.riemann.agent.infrastructure.state.ApprovalStore.ClaimStatus;
+import com.riemann.agent.infrastructure.state.CommandBus;
+import com.riemann.agent.infrastructure.state.LocalApprovalStore;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
@@ -8,6 +14,8 @@ import java.util.Optional;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.function.Supplier;
+import org.springframework.beans.factory.ObjectProvider;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
@@ -15,38 +23,40 @@ import org.springframework.web.server.ResponseStatusException;
 import reactor.core.publisher.Mono;
 
 /**
- * 人在回路审批：把有副作用的工具调用挂起，等登录用户显式批准/拒绝后才真正执行。
- *
- * <p>工具本身在 ReAct 循环内是同步产出结果的，无法停下来等用户点击，因此采用两阶段协议： 工具第一次调用返回一张 {@code type=approval} 的 A2UI 卡片（含
- * approvalId），并把真正的动作 注册到这里；用户在前端点「批准」才执行动作。审批与会话归属绑定，别的账号无法代批。
- *
- * <p>实现是进程内内存（带 TTL 与容量上限），与配额/沙箱状态一致——多实例部署需要换 Redis。
+ * Human-in-the-loop approvals. Metadata is shared through {@link ApprovalStore}; the executable
+ * action stays on the pod that created it. When another replica receives approve/reject, {@link
+ * CommandBus} routes the decision to the owning pod and carries the result back.
  */
 @Service
 public class ApprovalService {
 
     private static final Duration TTL = Duration.ofMinutes(10);
     private static final int MAX_PENDING = 500;
+    private static final Duration COMMAND_TIMEOUT = Duration.ofSeconds(15);
 
-    private final Map<String, Pending> pending = new ConcurrentHashMap<>();
+    private final ApprovalStore store;
+    private final CommandBus commandBus;
+    private final Map<String, PendingAction> actions = new ConcurrentHashMap<>();
 
-    private record Pending(
-            String id,
-            String userId,
-            String conversationId,
-            String tool,
-            String description,
-            Instant expiresAt,
-            Supplier<Mono<String>> action) {
-
-        boolean expired() {
-            return Instant.now().isAfter(expiresAt);
-        }
+    public ApprovalService() {
+        this(new LocalApprovalStore(), (CommandBus) null);
     }
+
+    @Autowired
+    public ApprovalService(ApprovalStore store, ObjectProvider<CommandBus> commandBus) {
+        this(store, commandBus.getIfAvailable());
+    }
+
+    public ApprovalService(ApprovalStore store, CommandBus commandBus) {
+        this.store = store;
+        this.commandBus = commandBus;
+    }
+
+    private record PendingAction(Supplier<Mono<String>> action, Instant expiresAt) {}
 
     public record ApprovalView(String id, String tool, String description, String status) {}
 
-    /** 注册一个待审批动作，返回 approvalId。 */
+    /** Registers a pending action and returns its approval id. */
     public String request(
             String userId,
             String conversationId,
@@ -57,76 +67,82 @@ public class ApprovalService {
             throw new IllegalArgumentException("userId and action are required");
         }
         String id = UUID.randomUUID().toString().replace("-", "");
-        Instant now = Instant.now();
-        Pending entry =
-                new Pending(id, userId, conversationId, tool, description, now.plus(TTL), action);
-        pending.put(id, entry);
+        Instant expires = Instant.now().plus(TTL);
+        store.save(new ApprovalMetadata(id, userId, conversationId, tool, description, expires));
+        actions.put(id, new PendingAction(action, expires));
         evictIfNeeded();
         return id;
     }
 
-    /** 查看审批（仅创建者可见）。 */
+    /** Only the creator can see a pending approval. */
     public Optional<ApprovalView> view(String id, String userId) {
-        Pending p = live(id);
-        if (p == null || !p.userId().equals(userId)) {
-            return Optional.empty();
-        }
-        return Optional.of(new ApprovalView(p.id(), p.tool(), p.description(), "pending"));
+        return store.view(id)
+                .filter(meta -> meta.userId().equals(userId))
+                .map(
+                        meta ->
+                                new ApprovalView(
+                                        meta.id(), meta.tool(), meta.description(), "pending"));
     }
 
-    /** 批准后执行动作。动作失败时审批已被消费，避免重复执行副作用。 */
+    /** Consumes the approval and executes the side effect, locally or on the owning pod. */
     public Mono<String> approve(String id, String userId) {
-        Pending p = requireOwner(id, userId);
-        pending.remove(id, p);
-        return p.action().get();
+        Claim claim = store.claim(id, userId);
+        requireClaimed(claim);
+        PendingAction pending = actions.remove(id);
+        if (pending != null) {
+            return pending.action().get();
+        }
+        if (commandBus != null) {
+            return commandBus.executeApprovalOnOwner(id, userId, COMMAND_TIMEOUT);
+        }
+        return Mono.error(
+                new ResponseStatusException(HttpStatus.SERVICE_UNAVAILABLE, "审批所属实例不可用，请稍后重试"));
     }
 
-    /** 拒绝：丢弃动作，不执行任何副作用。 */
+    /** Discards the action without executing any side effect. */
     public Mono<String> reject(String id, String userId) {
-        Pending p = requireOwner(id, userId);
-        pending.remove(id, p);
-        return Mono.just("已拒绝执行：" + p.description());
+        Claim claim = store.claim(id, userId);
+        requireClaimed(claim);
+        actions.remove(id);
+        return Mono.just("已拒绝执行：" + claim.metadata().description());
     }
 
-    private Pending requireOwner(String id, String userId) {
-        Pending p = live(id);
-        if (p == null) {
+    /** Executes an action that was claimed on another replica. */
+    public Mono<String> executeClaimed(String id, String userId) {
+        PendingAction pending = actions.remove(id);
+        if (pending == null) {
+            return Mono.error(new ResponseStatusException(HttpStatus.NOT_FOUND, "审批动作不在当前实例"));
+        }
+        return pending.action().get();
+    }
+
+    private static void requireClaimed(Claim claim) {
+        if (claim.status() == ClaimStatus.NOT_FOUND) {
             throw new ResponseStatusException(HttpStatus.NOT_FOUND, "审批不存在或已过期");
         }
-        if (!p.userId().equals(userId)) {
+        if (claim.status() == ClaimStatus.FORBIDDEN) {
             throw new ResponseStatusException(HttpStatus.FORBIDDEN, "无权审批此操作");
         }
-        return p;
-    }
-
-    private Pending live(String id) {
-        if (id == null) {
-            return null;
-        }
-        Pending p = pending.get(id);
-        if (p == null) {
-            return null;
-        }
-        if (p.expired()) {
-            pending.remove(id, p);
-            return null;
-        }
-        return p;
     }
 
     @Scheduled(fixedDelay = 60_000)
     public void sweep() {
-        pending.entrySet().removeIf(e -> e.getValue().expired());
+        Instant now = Instant.now();
+        actions.entrySet().removeIf(e -> !now.isBefore(e.getValue().expiresAt()));
     }
 
     private void evictIfNeeded() {
-        if (pending.size() <= MAX_PENDING) {
+        if (actions.size() <= MAX_PENDING) {
             return;
         }
-        pending.entrySet().stream()
+        actions.entrySet().stream()
                 .sorted(Comparator.comparing(e -> e.getValue().expiresAt()))
-                .limit(pending.size() - MAX_PENDING)
+                .limit(actions.size() - MAX_PENDING)
                 .toList()
-                .forEach(e -> pending.remove(e.getKey(), e.getValue()));
+                .forEach(
+                        e -> {
+                            actions.remove(e.getKey(), e.getValue());
+                            store.remove(e.getKey());
+                        });
     }
 }

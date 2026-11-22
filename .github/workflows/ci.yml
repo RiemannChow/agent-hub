@@ -73,6 +73,68 @@ jobs:
           if-no-files-found: ignore
           path: target/site/jacoco/**
 
+  # ===== 门禁 1b：Testcontainers 集成测试（真实 Redis + MongoDB） =====
+  integration:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    # Service containers avoid Testcontainers' Docker client API compatibility issues
+    # on newer runners. Locally, SharedStateIT starts the same images via Testcontainers.
+    services:
+      redis:
+        image: redis:7.2-alpine
+        ports:
+          - 6379:6379
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+      mongodb:
+        image: mongo:7
+        ports:
+          - 27017:27017
+        options: >-
+          --health-cmd "mongosh --quiet --eval 'db.adminCommand(\"ping\")'"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    env:
+      IT_REDIS_HOST: 127.0.0.1
+      IT_REDIS_PORT: 6379
+      IT_MONGO_URI: mongodb://127.0.0.1:27017/agent_hub_it
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Ensure local main ref for Spotless ratchet
+        run: |
+          git fetch origin main:refs/remotes/origin/main
+          if ! git show-ref --verify --quiet refs/heads/main; then
+            git branch main origin/main
+          fi
+
+      - name: Set up JDK 21
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '21'
+          cache: maven
+
+      # Failsafe runs *IT.java only under the `integration` profile; unit tests stay fast.
+      - name: Run Testcontainers integration tests
+        run: mvn -B -ntp verify -Pintegration
+
+      - name: Upload integration reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-reports
+          retention-days: 7
+          if-no-files-found: ignore
+          path: target/failsafe-reports/**
+
   # ===== 门禁 2：依赖漏洞扫描（OSV-Scanner，无需 API Key，基于 OSV 数据库） =====
   dependency-scan:
     name: Dependency Vulnerability Scan
