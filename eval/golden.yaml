@@ -127,7 +127,9 @@ cases:
     category: numeric
     message: "Fiction 类型的书有多少本？"
     expect:
-      tools_any_of: ["seek_sql_query", "seek_hybrid_search"]
+      # seek_book_count_by_year supports a genre filter; summing its yearly
+      # values yields the same ground truth as a COUNT(*) query.
+      tools_any_of: ["seek_sql_query", "seek_hybrid_search", "seek_book_count_by_year"]
       answer_numeric: 240
       max_tool_calls: 4
       max_latency_ms: 60000
