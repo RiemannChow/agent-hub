@@ -16,6 +16,11 @@ import com.riemann.agent.infrastructure.metrics.AgentMetrics;
 import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
 import com.riemann.agent.infrastructure.metrics.TurnTokenBudget;
 import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
+import com.riemann.agent.infrastructure.recovery.ErrorTaxonomy;
+import com.riemann.agent.infrastructure.recovery.RecoveryBudget;
+import com.riemann.agent.infrastructure.recovery.RecoveryPolicy;
+import com.riemann.agent.infrastructure.recovery.RecoveryProperties;
+import com.riemann.agent.infrastructure.recovery.TurnRecovery;
 import com.riemann.agent.infrastructure.toolkit.tools.AgentCallContext;
 import com.riemann.agent.infrastructure.toolkit.tools.SandboxState;
 import com.riemann.agent.infrastructure.toolkit.verify.TurnVerifier;
@@ -58,6 +63,9 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
     private final AgentQuotaProperties quotaProperties;
     private final VerificationProperties verifyProperties;
     private final VerificationGate verificationGate;
+    private final ErrorTaxonomy errorTaxonomy;
+    private final RecoveryPolicy recoveryPolicy;
+    private final RecoveryProperties recoveryProperties;
 
     public ReActAgentOrchestrationServiceImpl(
             ReActAgent reactAgent,
@@ -73,7 +81,10 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
             AttachmentProcessor attachmentProcessor,
             AgentQuotaProperties quotaProperties,
             VerificationProperties verifyProperties,
-            VerificationGate verificationGate) {
+            VerificationGate verificationGate,
+            ErrorTaxonomy errorTaxonomy,
+            RecoveryPolicy recoveryPolicy,
+            RecoveryProperties recoveryProperties) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.memoryService = memoryService;
@@ -88,6 +99,9 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         this.quotaProperties = quotaProperties;
         this.verifyProperties = verifyProperties;
         this.verificationGate = verificationGate;
+        this.errorTaxonomy = errorTaxonomy;
+        this.recoveryPolicy = recoveryPolicy;
+        this.recoveryProperties = recoveryProperties;
     }
 
     @Override
@@ -203,7 +217,21 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         // “The mapper returned a null value” -> NullPointerException /
         // UnsupportedOperationException。
         TurnVerifier verifier = new TurnVerifier(verifyProperties, verificationGate);
-        Flux<AgentEvent> domain = upstream.mapNotNull(mapper::toDomain).doOnNext(verifier::observe);
+        TurnRecovery recovery =
+                new TurnRecovery(
+                        errorTaxonomy, recoveryPolicy, new RecoveryBudget(recoveryProperties));
+        Flux<AgentEvent> domain =
+                upstream.mapNotNull(mapper::toDomain)
+                        .doOnNext(verifier::observe)
+                        .flatMap(
+                                e -> {
+                                    java.util.List<AgentEvent.Recovery> decisions =
+                                            recovery.observe(e);
+                                    return decisions.isEmpty()
+                                            ? Flux.just(e)
+                                            : Flux.concat(
+                                                    Flux.just(e), Flux.fromIterable(decisions));
+                                });
         // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
         Flux<AgentEvent> timed = TurnTimeout.apply(domain, executionProperties.getTurnTimeout());
         // 轮末追加用量与提示：usage 始终下发（默认 budget=0 表示不限制），
