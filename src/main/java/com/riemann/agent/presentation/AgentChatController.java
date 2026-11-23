@@ -64,6 +64,29 @@ public class AgentChatController {
         this.probe = probe;
     }
 
+    /** 查询审批状态（只有创建者可以）；404 表示已处理或已过期。 */
+    @GetMapping("/approvals/{id}")
+    public Mono<Map<String, Object>> approvalStatus(
+            @PathVariable String id, ServerWebExchange exchange) {
+        String userId = AuthenticatedUser.require(exchange);
+        return Mono.fromSupplier(
+                () ->
+                        requireApprovals()
+                                .view(id, userId)
+                                .map(
+                                        view ->
+                                                Map.<String, Object>of(
+                                                        "id", view.id(),
+                                                        "tool", view.tool(),
+                                                        "description", view.description(),
+                                                        "status", view.status(),
+                                                        "expiresAt", view.expiresAt().toString()))
+                                .orElseThrow(
+                                        () ->
+                                                new ResponseStatusException(
+                                                        HttpStatus.NOT_FOUND, "审批不存在或已处理")));
+    }
+
     /** 批准一次挂起的副作用操作（只有创建者可以）。 */
     @PostMapping("/approvals/{id}/approve")
     public Mono<Map<String, Object>> approve(@PathVariable String id, ServerWebExchange exchange) {
@@ -294,6 +317,8 @@ public class AgentChatController {
                     case AgentEvent.ToolCalling t -> "tool_calling";
                     case AgentEvent.ToolResult t -> "tool_result";
                     case AgentEvent.Token t -> "token";
+                    case AgentEvent.Usage u -> "usage";
+                    case AgentEvent.Notice n -> "notice";
                     case AgentEvent.Completed t -> "completed";
                 };
         return ServerSentEvent.builder(e).event(name).build();
