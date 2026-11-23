@@ -135,6 +135,22 @@ jobs:
           if-no-files-found: ignore
           path: target/failsafe-reports/**
 
+  # ===== 门禁 1c：前端 Markdown 渲染器 Node 单元测试（与浏览器共用同一份源码） =====
+  markdown:
+    name: Markdown Renderer Tests
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Run Markdown unit tests
+        run: node --test src/test/js/markdown.test.js
+
   # ===== 门禁 2：依赖漏洞扫描（OSV-Scanner，无需 API Key，基于 OSV 数据库） =====
   dependency-scan:
     name: Dependency Vulnerability Scan

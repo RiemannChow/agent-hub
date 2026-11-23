@@ -162,6 +162,32 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `NEO4J_USER` | ❌ | `neo4j` | Neo4j user. |
 | `NEO4J_PASSWORD` | ❌ | `oceanbase123` | Neo4j password (local demo). |
 | `SEEKDB_PASSWORD` | ❌ | (empty) | SeekDB/OceanBase JDBC password. |
+| `AGENT_QUOTA_ENABLED` | ❌ | `true` | Enable per-user concurrency and daily token quota. |
+| `AGENT_QUOTA_MAX_CONCURRENT` | ❌ | `2` | Max concurrent turns per user. |
+| `AGENT_QUOTA_DAILY_TOKENS` | ❌ | `500000` | Daily token budget per user (natural day reset). |
+| `AGENT_QUOTA_MAX_TOKENS_PER_TURN` | ❌ | `0` | Per-turn token cap; `0` disables it (default, backwards compatible). |
+| `AGENT_ATTACH_MAX_FILES` | ❌ | `5` | Max accepted attachments per turn. |
+| `AGENT_ATTACH_MAX_SINGLE_BYTES` | ❌ | `2097152` | Max decoded size of one attachment. |
+| `AGENT_ATTACH_MAX_TOTAL_BYTES` | ❌ | `6291456` | Max decoded size of all attachments in a turn. |
+| `AGENT_ATTACH_MAX_TEXT_CHARS` | ❌ | `6000` | Max extracted text characters per attachment. |
+| `AGENT_ATTACH_PDF_ENABLED` | ❌ | `true` | Allow PDF attachments (bounded text extraction via PDFBox). |
+| `AGENT_ATTACH_MAX_PDF_PAGES` | ❌ | `10` | Max PDF pages scanned per attachment. |
+
+### Human-in-the-loop, attachments and per-turn budget
+
+- Approvals created by a tool can be queried with `GET /api/agent/approvals/{id}` by their owner.
+  The chat card polls this endpoint, so reloads and a second tab converge on the same final state,
+  and expired approvals are published as a rejection through the command bus.
+- The composer accepts images, text/JSON and PDF files. All limits above are configurable via
+  environment variables; PDF text extraction is capped by pages and characters and never fails
+  the whole turn.
+- `AGENT_QUOTA_MAX_TOKENS_PER_TURN` caps a single ReAct turn independently of the daily quota.
+  When exceeded, further model calls are interrupted, a `notice` is emitted and a `usage` SSE
+  event (tokens used + budget) is shown in the header. The default `0` keeps existing behaviour.
+
+The assistant bubble renderer lives in `static/js/markdown.js` (HTML-escaped first, link schemes
+restricted to `http`/`https`/`mailto`, task lists / fenced-code language labels supported) and is
+covered by Node unit tests in `src/test/js/markdown.test.js`.
 
 ## Project Structure
 
