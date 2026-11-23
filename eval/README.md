@@ -54,6 +54,26 @@ never retried.
 The process exits `0` when every case passes and `1` otherwise, so it can be
 used as a CI gate once a baseline is established.
 
+## CI credential preflight
+
+The GitHub Actions job probes the model gateway with `AGENT_MODEL_API_KEY`
+before booting the stack. A disabled/expired gateway package returns HTTP 401
+or 403 and makes **every** trajectory case fail for reasons unrelated to the
+agent, so in that situation the job records `status: "skipped"` in the report
+and warns instead of reporting a false regression. Other HTTP statuses do not
+trigger a skip.
+
+To restore evaluation, either renew the `AGENT_MODEL_API_KEY` secret / the
+LKEAP package, or configure a fallback:
+
+- secret `AGENT_FALLBACK_API_KEY`
+- variable `AGENT_FALLBACK_MODEL_NAME` (required to enable the fallback)
+- optional variable `AGENT_FALLBACK_BASE_URL` (defaults to the primary gateway)
+
+The preflight also probes the fallback; if it is reachable, the whole golden
+set runs against it. The primary endpoint and model are configurable through
+variables `AGENT_MODEL_BASE_URL` and `AGENT_MODEL_NAME`.
+
 ## Assertion reference
 
 | Key | Meaning |
