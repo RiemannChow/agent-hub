@@ -24,6 +24,8 @@
         <opentelemetry.version>1.61.0</opentelemetry.version>
         <!-- SQL 静态解析：用于对 LLM 生成的 SQL 做只读/表白名单/LIMIT 改写（SQL 守卫） -->
         <jsqlparser.version>4.9</jsqlparser.version>
+        <!-- PDF text extraction for multimodal attachments (bounded page/character caps). -->
+        <pdfbox.version>3.0.7</pdfbox.version>
         <!-- JaCoCo: coverage report consumed by the CI coverage gate -->
         <jacoco.version>0.8.12</jacoco.version>
         <!-- No-regression floor, deliberately just below the measured 7.76% baseline.
@@ -129,6 +131,13 @@
             <groupId>com.github.jsqlparser</groupId>
             <artifactId>jsqlparser</artifactId>
             <version>${jsqlparser.version}</version>
+        </dependency>
+
+        <!-- ===== 多模态附件：PDF 文本抽取（只读，限制页数与字符数） ===== -->
+        <dependency>
+            <groupId>org.apache.pdfbox</groupId>
+            <artifactId>pdfbox</artifactId>
+            <version>${pdfbox.version}</version>
         </dependency>
 
         <!-- ===== 可观测性：Actuator + Micrometer（指标 / 健康检查） =====

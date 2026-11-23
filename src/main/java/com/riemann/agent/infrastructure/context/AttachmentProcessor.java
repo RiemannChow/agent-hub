@@ -12,15 +12,19 @@ import java.util.List;
 import java.util.Locale;
 import java.util.Map;
 import java.util.Set;
+import org.apache.pdfbox.Loader;
+import org.apache.pdfbox.pdmodel.PDDocument;
+import org.apache.pdfbox.text.PDFTextStripper;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Component;
 
 /**
  * 把前端上传的附件转换成 AgentScope 的 {@link ContentBlock}。
  *
- * <p>图片以 base64 构造 {@link ImageBlock}，模型能真正「看到」；文本文件解码后拼成文本块。 所有附件都经过数量、大小与 MIME
- * 白名单校验，非法附件被跳过并给出明确提示—— 上传失败绝不能让整轮对话失败。
+ * <p>图片以 base64 构造 {@link ImageBlock}，模型能真正「看到」；文本与 PDF 抽取出的文字拼成 {@link TextBlock}。所有附件都经过数量、大小与
+ * MIME 白名单校验，并受 {@link AttachmentProperties} 约束； 非法附件被跳过并给出明确提示——上传失败绝不能让整轮对话失败。
  */
 @Component
 public class AttachmentProcessor {
@@ -29,11 +33,7 @@ public class AttachmentProcessor {
 
     public static final String ATTR_KEY = "attachments";
 
-    private static final int MAX_FILES = 5;
-    private static final int MAX_SINGLE_BYTES = 2 * 1024 * 1024;
-    private static final int MAX_TOTAL_BYTES = 6 * 1024 * 1024;
-    private static final int MAX_TEXT_CHARS = 6000;
-
+    private static final String PDF_TYPE = "application/pdf";
     private static final Set<String> IMAGE_TYPES =
             Set.of("image/png", "image/jpeg", "image/gif", "image/webp");
     private static final Set<String> TEXT_TYPES =
@@ -42,9 +42,22 @@ public class AttachmentProcessor {
                     "text/csv",
                     "text/markdown",
                     "application/json",
-                    "application/x-ndjson");
+                    "application/x-ndjson",
+                    "application/xml",
+                    "text/xml");
 
     public record Processed(List<ContentBlock> blocks, String note) {}
+
+    private final AttachmentProperties props;
+
+    public AttachmentProcessor() {
+        this(new AttachmentProperties());
+    }
+
+    @Autowired
+    public AttachmentProcessor(AttachmentProperties props) {
+        this.props = props;
+    }
 
     /** 从请求级属性里取出附件（只有 UI 的 chat 端点会写入；A2A 走纯文本）。 */
     @SuppressWarnings("unchecked")
@@ -71,8 +84,8 @@ public class AttachmentProcessor {
         int totalBytes = 0;
 
         for (ChatAttachment attachment : attachments) {
-            if (count >= MAX_FILES) {
-                notes.add("附件数量超过 " + MAX_FILES + " 个，其余已忽略");
+            if (count >= props.getMaxFiles()) {
+                notes.add("附件数量超过 " + props.getMaxFiles() + " 个，其余已忽略");
                 break;
             }
             if (attachment == null || attachment.data() == null || attachment.data().isBlank()) {
@@ -81,8 +94,9 @@ public class AttachmentProcessor {
             }
             String mime = normalize(attachment.mimeType());
             boolean image = IMAGE_TYPES.contains(mime);
+            boolean pdf = PDF_TYPE.equals(mime) && props.isPdfEnabled();
             boolean text = TEXT_TYPES.contains(mime);
-            if (!image && !text) {
+            if (!image && !text && !pdf) {
                 notes.add("不支持的附件类型：" + mime + "（" + safeName(attachment.name()) + "）");
                 continue;
             }
@@ -93,17 +107,26 @@ public class AttachmentProcessor {
                 notes.add("附件不是合法 base64：" + safeName(attachment.name()));
                 continue;
             }
-            if (bytes.length == 0 || bytes.length > MAX_SINGLE_BYTES) {
+            if (bytes.length == 0 || bytes.length > props.getMaxSingleBytes()) {
                 notes.add(
                         "附件为空或超过 "
-                                + (MAX_SINGLE_BYTES / 1024 / 1024)
+                                + (props.getMaxSingleBytes() / 1024 / 1024)
                                 + "MB："
                                 + safeName(attachment.name()));
                 continue;
             }
-            if (totalBytes + bytes.length > MAX_TOTAL_BYTES) {
-                notes.add("附件总大小超过 " + (MAX_TOTAL_BYTES / 1024 / 1024) + "MB，其余已忽略");
+            if (totalBytes + bytes.length > props.getMaxTotalBytes()) {
+                notes.add("附件总大小超过 " + (props.getMaxTotalBytes() / 1024 / 1024) + "MB，其余已忽略");
                 break;
+            }
+
+            String extractedText = null;
+            if (pdf) {
+                extractedText = extractPdfText(bytes);
+                if (extractedText == null) {
+                    notes.add("PDF 解析失败：" + safeName(attachment.name()));
+                    continue;
+                }
             }
             totalBytes += bytes.length;
             count++;
@@ -117,15 +140,22 @@ public class AttachmentProcessor {
                                 .build());
                 notes.add("图片：" + safeName(attachment.name()));
             } else {
-                String decoded = new String(bytes, StandardCharsets.UTF_8);
-                if (decoded.length() > MAX_TEXT_CHARS) {
-                    decoded = decoded.substring(0, MAX_TEXT_CHARS) + "\n…（附件过长已截断）";
+                String raw = pdf ? extractedText : new String(bytes, StandardCharsets.UTF_8);
+                if (raw.length() > props.getMaxTextChars()) {
+                    raw = raw.substring(0, props.getMaxTextChars()) + "\n…（附件过长已截断）";
                 }
+                String label = pdf ? "PDF 文本" : "文本";
                 blocks.add(
                         TextBlock.builder()
-                                .text("【附件：" + safeName(attachment.name()) + "】\n" + decoded)
+                                .text(
+                                        "【附件："
+                                                + safeName(attachment.name())
+                                                + "（"
+                                                + label
+                                                + "）】\n"
+                                                + raw)
                                 .build());
-                notes.add("文本：" + safeName(attachment.name()));
+                notes.add(label + "：" + safeName(attachment.name()));
             }
         }
         String note = notes.isEmpty() ? "" : "【附件处理】" + String.join("；", notes);
@@ -134,6 +164,20 @@ public class AttachmentProcessor {
                     "[Attachments] accepted {} block(s), totalBytes={}", blocks.size(), totalBytes);
         }
         return new Processed(List.copyOf(blocks), note);
+    }
+
+    /** Extracts a bounded amount of text from a PDF; {@code null} means parsing failed. */
+    private String extractPdfText(byte[] bytes) {
+        try (PDDocument document = Loader.loadPDF(bytes)) {
+            int pages = Math.min(document.getNumberOfPages(), Math.max(1, props.getMaxPdfPages()));
+            PDFTextStripper stripper = new PDFTextStripper();
+            stripper.setStartPage(1);
+            stripper.setEndPage(pages);
+            return stripper.getText(document);
+        } catch (Exception e) {
+            log.warn("[Attachments] PDF extraction failed: {}", e.toString());
+            return null;
+        }
     }
 
     private static String normalize(String mime) {
