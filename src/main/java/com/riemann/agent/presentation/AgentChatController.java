@@ -320,6 +320,7 @@ public class AgentChatController {
                     case AgentEvent.Usage u -> "usage";
                     case AgentEvent.Notice n -> "notice";
                     case AgentEvent.Verification v -> "verification";
+                    case AgentEvent.Recovery r -> "recovery";
                     case AgentEvent.Completed t -> "completed";
                 };
         return ServerSentEvent.builder(e).event(name).build();

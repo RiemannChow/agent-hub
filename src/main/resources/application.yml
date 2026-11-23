@@ -312,6 +312,15 @@ agent:
       - "password[=:]"
       - "-----begin private key-----"
 
+  # ============ 错误分类与恢复（Correct） ============
+  correct:
+    enabled: ${AGENT_CORRECT_ENABLED:true}
+    # 单轮累计恢复次数硬上限，超限强制 ESCALATE（人工接管）
+    max-recoveries-per-turn: ${AGENT_CORRECT_MAX_RECOVERIES:6}
+    # 同一错误类别 / 同一工具单轮内的尝试上限
+    max-attempts-per-category: ${AGENT_CORRECT_MAX_PER_CATEGORY:3}
+    max-attempts-per-tool: ${AGENT_CORRECT_MAX_PER_TOOL:3}
+
   # ============ Neo4j 只读 Cypher 守卫（ob_cypher 工具） ============
   # 改造前只有一条正则黑名单：拦不住 CALL apoc.load.json(...)（SSRF）、
   # CALL apoc.cypher.run('...')（动态执行绕过），却会误杀 WHERE n.name = 'SET'。

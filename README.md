@@ -175,6 +175,8 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `AGENT_CONSTRAIN_ENABLED` | ❌ | `true` | Enable the pre-execution tool policy gate. |
 | `AGENT_VERIFY_ENABLED` | ❌ | `true` | Enable tool-result verification and answer grounding. |
 | `AGENT_VERIFY_ANNOTATE` | ❌ | `true` | Annotate failed verification into the tool result. |
+| `AGENT_CORRECT_ENABLED` | ❌ | `true` | Enable error classification and bounded recovery. |
+| `AGENT_CORRECT_MAX_RECOVERIES` | ❌ | `6` | Hard cap on recoveries per turn; escalation beyond it. |
 
 ### Constrain: least-privilege tool policies
 
@@ -195,6 +197,17 @@ tools are marked `ASK` and still go through the existing `ApprovalService` insid
 - A per-turn `verification` SSE event reports whether numeric claims in the answer are traceable
   to a tool result. The UI only surfaces it when grounding fails; grounded turns are unaffected.
 - Built-in checks are non-blocking: they never rewrite the assistant answer or fail a turn.
+
+### Correct: classified, bounded recovery
+
+- Tool/turn errors are classified into `TRANSIENT`, `PERMANENT`, `POLICY_DENIED`,
+  `VERIFICATION_FAILED`, `BUDGET_EXCEEDED` and `CANCELLED`. Each class maps to a strategy:
+  bounded `RETRY`, `CONTINUE` with a correction hint, `COMPENSATE`, `ESCALATE` or `STOP`.
+- `RecoveryBudget` caps attempts per turn / error class / tool. Once exhausted the strategy is
+  forced to `ESCALATE`, so a turn cannot burn unbounded tokens retrying the same failure.
+- Idempotency keys derive deterministically from conversation + turn + tool + sorted arguments,
+  making retries safe for write tools.
+- Each decision emits a `recovery` SSE event; the UI surfaces only decisions needing attention.
 
 ### Human-in-the-loop, attachments and per-turn budget
 

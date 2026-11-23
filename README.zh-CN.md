@@ -161,6 +161,8 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `AGENT_CONSTRAIN_ENABLED` | ❌ | `true` | 启用工具执行前策略门禁。 |
 | `AGENT_VERIFY_ENABLED` | ❌ | `true` | 启用工具结果验证与答案数字溯源。 |
 | `AGENT_VERIFY_ANNOTATE` | ❌ | `true` | 把验证失败原因标注进工具结果。 |
+| `AGENT_CORRECT_ENABLED` | ❌ | `true` | 启用错误分类与有界恢复。 |
+| `AGENT_CORRECT_MAX_RECOVERIES` | ❌ | `6` | 单轮恢复次数硬上限，超出转人工。 |
 
 ### Constrain：最小权限工具策略
 
@@ -177,6 +179,16 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
   并把可读原因标注进结果，让模型能换工具或说明限制。
 - 每轮下发 `verification` SSE 事件，报告答案中的数字是否可追溯到工具结果；前端只在溯源失败时提示。
 - 校验是旁路能力：不改写助手正文、不让轮次失败。
+
+### Correct：分类恢复与次数上限
+
+- 工具/轮次错误被分类为 `TRANSIENT` / `PERMANENT` / `POLICY_DENIED` / `VERIFICATION_FAILED` /
+  `BUDGET_EXCEEDED` / `CANCELLED`，每类映射到有界 `RETRY`、带纠正提示的 `CONTINUE`、`COMPENSATE`、
+  `ESCALATE` 或 `STOP`。
+- `RecoveryBudget` 按轮次 / 错误类别 / 工具三个维度限制尝试次数，超限强制 `ESCALATE`，
+  避免同一错误反复重试烧掉整个 token 预算。
+- 幂等键由「会话 + 轮次 + 工具 + 排序后的参数」确定性生成，使写工具的重试安全。
+- 每次决策下发 `recovery` SSE 事件，前端只在需要关注时提示。
 
 ### 人在回路、多模态与单轮预算
 

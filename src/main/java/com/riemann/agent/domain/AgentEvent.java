@@ -22,5 +22,10 @@ public sealed interface AgentEvent {
     /** 轮末验证结论。{@code grounded=false} 表示答案里出现了工具结果中不存在的数字。 该事件只告知，不改变助手正文。 */
     record Verification(boolean grounded, int toolCalls, String reason) implements AgentEvent {}
 
+    /** 一次恢复决策。{@code strategy} 取自 RecoveryPolicy.Strategy 的字符串值， 用字符串避免领域层依赖基础设施层。 */
+    record Recovery(
+            String errorCategory, String strategy, String tool, int used, int limit, String reason)
+            implements AgentEvent {}
+
     record Completed(String conversationId) implements AgentEvent {}
 }
