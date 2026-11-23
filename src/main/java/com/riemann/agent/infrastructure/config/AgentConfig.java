@@ -14,6 +14,7 @@ import com.riemann.agent.infrastructure.toolkit.tools.SeekForkSandboxTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekHybridSearchTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekSandboxWriteTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekSqlQueryTool;
+import com.riemann.agent.infrastructure.toolkit.verify.VerificationHook;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.model.ExecutionConfig;
 import io.agentscope.core.model.Model;
@@ -122,6 +123,7 @@ public class AgentConfig {
             Toolkit agentToolkit,
             ObjectProvider<AgentScopeMiddlewareChain> middlewareChain,
             ObjectProvider<ToolResultGovernor> toolGovernor,
+            ObjectProvider<VerificationHook> verificationHook,
             @Qualifier("modelExecutionConfig") ExecutionConfig modelExecutionConfig,
             @Qualifier("toolExecutionConfig") ExecutionConfig toolExecutionConfig,
             FallbackModelHolder fallbackModelHolder,
@@ -149,6 +151,8 @@ public class AgentConfig {
         // 同一个实例既做 Hook（改写 PostActingEvent 里的结果）又做 Middleware
         // （onActing 里拿到本轮 RuntimeContext，把 toolCallId 与轮次绑定）。
         toolGovernor.ifAvailable(governor -> builder.hook(governor).middleware(governor));
+        // 结果验证：在工具结果回填模型前检查契约与可疑内容（旁路，失败不影响主链路）。
+        verificationHook.ifAvailable(builder::hook);
         // 降级：仅在配置了 agent.model.fallback.name 时启用
         if (fallbackModelHolder != null && fallbackModelHolder.isPresent()) {
             builder.fallbackModel(fallbackModelHolder.model());

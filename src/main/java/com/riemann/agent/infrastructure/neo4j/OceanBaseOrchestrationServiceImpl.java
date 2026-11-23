@@ -15,6 +15,9 @@ import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
 import com.riemann.agent.infrastructure.metrics.TurnTokenBudget;
 import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
 import com.riemann.agent.infrastructure.toolkit.tools.AgentCallContext;
+import com.riemann.agent.infrastructure.toolkit.verify.TurnVerifier;
+import com.riemann.agent.infrastructure.toolkit.verify.VerificationGate;
+import com.riemann.agent.infrastructure.toolkit.verify.VerificationProperties;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.micrometer.core.instrument.Timer;
@@ -49,6 +52,8 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
     private final AgentMetrics metrics;
     private final ContextWindowAssembler contextAssembler;
     private final AgentQuotaProperties quotaProperties;
+    private final VerificationProperties verifyProperties;
+    private final VerificationGate verificationGate;
 
     public OceanBaseOrchestrationServiceImpl(
             ReActAgent reactAgent,
@@ -59,7 +64,9 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
             TurnTelemetry telemetry,
             AgentMetrics metrics,
             ContextWindowAssembler contextAssembler,
-            AgentQuotaProperties quotaProperties) {
+            AgentQuotaProperties quotaProperties,
+            VerificationProperties verifyProperties,
+            VerificationGate verificationGate) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.executionProperties = executionProperties;
@@ -69,6 +76,8 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
         this.metrics = metrics;
         this.contextAssembler = contextAssembler;
         this.quotaProperties = quotaProperties;
+        this.verifyProperties = verifyProperties;
+        this.verificationGate = verificationGate;
     }
 
     @Override
@@ -123,6 +132,9 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
                                         TurnTokenBudget budget =
                                                 new TurnTokenBudget(
                                                         quotaProperties.getMaxTokensPerTurn());
+                                        TurnVerifier verifier =
+                                                new TurnVerifier(
+                                                        verifyProperties, verificationGate);
                                         Flux<AgentEvent> domain =
                                                 telemetry
                                                         .instrument(
@@ -133,7 +145,8 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
                                                                 () ->
                                                                         reactAgent.interrupt(
                                                                                 userId, sessionId))
-                                                        .mapNotNull(mapper::toDomain);
+                                                        .mapNotNull(mapper::toDomain)
+                                                        .doOnNext(verifier::observe);
                                         // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
                                         return TurnTimeout.apply(
                                                         domain,
@@ -165,6 +178,12 @@ public class OceanBaseOrchestrationServiceImpl implements AgentOrchestrationServ
                                                                                                 budget
                                                                                                         .limit(),
                                                                                                 false))))
+                                                .concatWith(
+                                                        Flux.defer(
+                                                                () ->
+                                                                        Flux.just(
+                                                                                verifier
+                                                                                        .conclusion())))
                                                 .concatWithValues(
                                                         new AgentEvent.Completed(conversationId));
                                     })

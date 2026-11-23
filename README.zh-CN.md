@@ -159,6 +159,8 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `AGENT_ATTACH_PDF_ENABLED` | ❌ | `true` | 是否允许 PDF 附件（PDFBox 有界文本抽取）。 |
 | `AGENT_ATTACH_MAX_PDF_PAGES` | ❌ | `10` | 单个 PDF 最多扫描页数。 |
 | `AGENT_CONSTRAIN_ENABLED` | ❌ | `true` | 启用工具执行前策略门禁。 |
+| `AGENT_VERIFY_ENABLED` | ❌ | `true` | 启用工具结果验证与答案数字溯源。 |
+| `AGENT_VERIFY_ANNOTATE` | ❌ | `true` | 把验证失败原因标注进工具结果。 |
 
 ### Constrain：最小权限工具策略
 
@@ -168,6 +170,13 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 `DENIED` 结果供模型自行改路。内置策略覆盖所有项目自带工具，因此默认配置保持原有行为。
 `agent.constrain.policies.<tool>.decision` 可在不改代码的情况下覆盖决策（例如临时下线某工具）。
 高风险写工具标记为 `ASK`，仍由工具内部的 `ApprovalService` 完成人工审批。
+
+### Verify：结果契约与答案溯源
+
+- `VerificationGate` 在工具结果回填模型前检查空结果、不合理数值与可疑内容（提示注入 / 凭据泄露），
+  并把可读原因标注进结果，让模型能换工具或说明限制。
+- 每轮下发 `verification` SSE 事件，报告答案中的数字是否可追溯到工具结果；前端只在溯源失败时提示。
+- 校验是旁路能力：不改写助手正文、不让轮次失败。
 
 ### 人在回路、多模态与单轮预算
 

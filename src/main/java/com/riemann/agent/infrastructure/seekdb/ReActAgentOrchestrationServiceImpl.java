@@ -18,6 +18,9 @@ import com.riemann.agent.infrastructure.metrics.TurnTokenBudget;
 import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
 import com.riemann.agent.infrastructure.toolkit.tools.AgentCallContext;
 import com.riemann.agent.infrastructure.toolkit.tools.SandboxState;
+import com.riemann.agent.infrastructure.toolkit.verify.TurnVerifier;
+import com.riemann.agent.infrastructure.toolkit.verify.VerificationGate;
+import com.riemann.agent.infrastructure.toolkit.verify.VerificationProperties;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.message.Msg;
@@ -53,6 +56,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
     private final AttachmentProcessor attachmentProcessor;
     private final SeekDbConversationRepository seekDb;
     private final AgentQuotaProperties quotaProperties;
+    private final VerificationProperties verifyProperties;
+    private final VerificationGate verificationGate;
 
     public ReActAgentOrchestrationServiceImpl(
             ReActAgent reactAgent,
@@ -66,7 +71,9 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
             ContextWindowAssembler contextAssembler,
             SeekDbConversationRepository seekDb,
             AttachmentProcessor attachmentProcessor,
-            AgentQuotaProperties quotaProperties) {
+            AgentQuotaProperties quotaProperties,
+            VerificationProperties verifyProperties,
+            VerificationGate verificationGate) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.memoryService = memoryService;
@@ -79,6 +86,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         this.attachmentProcessor = attachmentProcessor;
         this.seekDb = seekDb;
         this.quotaProperties = quotaProperties;
+        this.verifyProperties = verifyProperties;
+        this.verificationGate = verificationGate;
     }
 
     @Override
@@ -193,7 +202,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         // 而 AgentEventMapper 对未映射的框架事件返回 null，会抛
         // “The mapper returned a null value” -> NullPointerException /
         // UnsupportedOperationException。
-        Flux<AgentEvent> domain = upstream.mapNotNull(mapper::toDomain);
+        TurnVerifier verifier = new TurnVerifier(verifyProperties, verificationGate);
+        Flux<AgentEvent> domain = upstream.mapNotNull(mapper::toDomain).doOnNext(verifier::observe);
         // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
         Flux<AgentEvent> timed = TurnTimeout.apply(domain, executionProperties.getTurnTimeout());
         // 轮末追加用量与提示：usage 始终下发（默认 budget=0 表示不限制），
@@ -218,6 +228,7 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
                                                     new AgentEvent.Usage(
                                                             budget.used(), budget.limit(), false));
                                         }))
+                        .concatWith(Flux.defer(() -> Flux.just(verifier.conclusion())))
                         .concatWithValues(new AgentEvent.Completed(conversationId));
         // 轮末兜底：若 agent 只 fork 了沙箱却没调用 commit/discard（出错、或模型忘了收口），
         // 这里把仍残留的沙箱库 DROP 掉，避免「fork 出来的数据库」越积越多、跨轮串味。

@@ -30,6 +30,7 @@ public class RedisJsonCodec {
         @JsonSubTypes.Type(value = AgentEvent.Token.class, name = "token"),
         @JsonSubTypes.Type(value = AgentEvent.Usage.class, name = "usage"),
         @JsonSubTypes.Type(value = AgentEvent.Notice.class, name = "notice"),
+        @JsonSubTypes.Type(value = AgentEvent.Verification.class, name = "verification"),
         @JsonSubTypes.Type(value = AgentEvent.Completed.class, name = "completed")
     })
     private abstract static class EventMixin {}

@@ -319,6 +319,7 @@ public class AgentChatController {
                     case AgentEvent.Token t -> "token";
                     case AgentEvent.Usage u -> "usage";
                     case AgentEvent.Notice n -> "notice";
+                    case AgentEvent.Verification v -> "verification";
                     case AgentEvent.Completed t -> "completed";
                 };
         return ServerSentEvent.builder(e).event(name).build();
