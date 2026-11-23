@@ -41,13 +41,80 @@ jobs:
       - name: Install evaluation dependencies
         run: python -m pip install -r eval/requirements.txt
 
+      # A disabled/expired model package makes every trajectory case fail for
+      # reasons unrelated to the agent. Detect it before booting the stack so
+      # CI reports a clear "skipped" instead of 28 misleading capability failures.
+      - name: Preflight model gateway
+        id: model_preflight
+        env:
+          AGENT_MODEL_API_KEY: ${{ secrets.AGENT_MODEL_API_KEY }}
+          AGENT_MODEL_BASE_URL: ${{ vars.AGENT_MODEL_BASE_URL || 'https://api.lkeap.cloud.tencent.com/plan/anthropic' }}
+          AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME || 'hy4-preview' }}
+          AGENT_FALLBACK_API_KEY: ${{ secrets.AGENT_FALLBACK_API_KEY }}
+          AGENT_FALLBACK_BASE_URL: ${{ vars.AGENT_FALLBACK_BASE_URL || '' }}
+          AGENT_FALLBACK_MODEL_NAME: ${{ vars.AGENT_FALLBACK_MODEL_NAME || '' }}
+        run: |
+          check_gateway() {
+            key="$1"; base="${2%/}"; model="$3"; out="$4"
+            payload=$(printf '{"model":"%s","max_tokens":1,"messages":[{"role":"user","content":"ping"}]}' "$model")
+            curl -sS -o "$out" -w '%{http_code}' --max-time 20 \
+              -X POST "$base/v1/messages" \
+              -H 'content-type: application/json' \
+              -H 'anthropic-version: 2023-06-01' \
+              -H "x-api-key: $key" \
+              --data "$payload" || echo "000"
+          }
+          error_detail() {
+            python3 - "$1" <<'PY' 2>/dev/null || true
+          import json, sys
+          try:
+              with open(sys.argv[1], encoding='utf-8') as fh:
+                  payload = json.load(fh)
+              err = payload.get('error') if isinstance(payload, dict) else None
+              print((err or {}).get('message') or payload.get('message', ''))
+          except Exception:
+              pass
+          PY
+          }
+
+          skip=false
+          use_fallback=false
+          if [ -z "$AGENT_MODEL_API_KEY" ]; then
+            echo "::error::AGENT_MODEL_API_KEY secret is not configured; evaluation cannot run."
+            skip=true
+          else
+            status=$(check_gateway "$AGENT_MODEL_API_KEY" "$AGENT_MODEL_BASE_URL" "$AGENT_MODEL_NAME" /tmp/model-preflight.json)
+            echo "Primary model gateway preflight HTTP status: $status"
+            if [ "$status" = "401" ] || [ "$status" = "403" ]; then
+              detail=$(error_detail /tmp/model-preflight.json | tr '\n' ' ' | cut -c1-240)
+              fallback_base="${AGENT_FALLBACK_BASE_URL:-$AGENT_MODEL_BASE_URL}"
+              fallback_key="${AGENT_FALLBACK_API_KEY:-$AGENT_MODEL_API_KEY}"
+              if [ -n "$AGENT_FALLBACK_MODEL_NAME" ] && [ -n "$AGENT_FALLBACK_API_KEY" ]; then
+                fb_status=$(check_gateway "$fallback_key" "$fallback_base" "$AGENT_FALLBACK_MODEL_NAME" /tmp/model-preflight-fallback.json)
+                echo "Fallback model gateway preflight HTTP status: $fb_status"
+                if [ "$fb_status" != "401" ] && [ "$fb_status" != "403" ]; then
+                  echo "::warning::Primary model credential is rejected (HTTP $status): $detail Using the configured fallback model for this evaluation."
+                  use_fallback=true
+                fi
+              fi
+              if [ "$use_fallback" != "true" ]; then
+                echo "::warning::Model gateway rejected the CI credential (HTTP $status): $detail Renew AGENT_MODEL_API_KEY / the LKEAP package, or configure AGENT_FALLBACK_API_KEY + AGENT_FALLBACK_MODEL_NAME. Evaluation is skipped, not failed."
+                skip=true
+              fi
+            fi
+          fi
+          printf 'skip=%s\nuse_fallback=%s\n' "$skip" "$use_fallback" >> "$GITHUB_OUTPUT"
+
       - name: Build application jar
+        if: steps.model_preflight.outputs.skip != 'true'
         run: mvn -B -ntp -DskipTests package
 
       - name: Start dependencies
+        if: steps.model_preflight.outputs.skip != 'true'
         run: docker compose up -d seekdb mongodb nacos
 
       - name: Wait for dependencies
+        if: steps.model_preflight.outputs.skip != 'true'
         run: |
           for service in seekdb mongodb nacos; do
             echo "Waiting for $service ..."
@@ -67,12 +134,28 @@ jobs:
           done
 
       - name: Build application image
+        if: steps.model_preflight.outputs.skip != 'true'
         run: docker build -t agent-hub:eval .
 
       - name: Start application
+        if: steps.model_preflight.outputs.skip != 'true'
         env:
           AGENT_MODEL_API_KEY: ${{ secrets.AGENT_MODEL_API_KEY }}
+          AGENT_MODEL_BASE_URL: ${{ vars.AGENT_MODEL_BASE_URL || 'https://api.lkeap.cloud.tencent.com/plan/anthropic' }}
+          AGENT_MODEL_NAME: ${{ vars.AGENT_MODEL_NAME || 'hy4-preview' }}
+          AGENT_FALLBACK_API_KEY: ${{ secrets.AGENT_FALLBACK_API_KEY }}
+          AGENT_FALLBACK_BASE_URL: ${{ vars.AGENT_FALLBACK_BASE_URL || '' }}
+          AGENT_FALLBACK_MODEL_NAME: ${{ vars.AGENT_FALLBACK_MODEL_NAME || '' }}
         run: |
+          if [ "${{ steps.model_preflight.outputs.use_fallback }}" = "true" ]; then
+            AGENT_MODEL_API_KEY="$AGENT_FALLBACK_API_KEY"
+            AGENT_MODEL_NAME="$AGENT_FALLBACK_MODEL_NAME"
+            if [ -n "$AGENT_FALLBACK_BASE_URL" ]; then
+              AGENT_MODEL_BASE_URL="$AGENT_FALLBACK_BASE_URL"
+            fi
+            AGENT_FALLBACK_MODEL_NAME=""
+            echo "Using the configured fallback model for this evaluation"
+          fi
           if [ -z "$AGENT_MODEL_API_KEY" ]; then
             echo "::error::AGENT_MODEL_API_KEY secret is not configured; evaluation cannot run."
             exit 1
@@ -81,6 +164,11 @@ jobs:
           docker run -d --name agent-hub-app --network host \
             -v "$PWD/sql:/app/sql:ro" \
             -e AGENT_MODEL_API_KEY="$AGENT_MODEL_API_KEY" \
+            -e AGENT_MODEL_BASE_URL="$AGENT_MODEL_BASE_URL" \
+            -e AGENT_MODEL_NAME="$AGENT_MODEL_NAME" \
+            -e AGENT_FALLBACK_API_KEY="$AGENT_FALLBACK_API_KEY" \
+            -e AGENT_FALLBACK_BASE_URL="$AGENT_FALLBACK_BASE_URL" \
+            -e AGENT_FALLBACK_MODEL_NAME="$AGENT_FALLBACK_MODEL_NAME" \
             -e SPRING_PROFILES_ACTIVE=seekdb \
             -e AGENT_SHARE_DIR=/tmp/agent-hub-shares \
             -e AGENT_AUTH_SMS_MODE=demo \
@@ -98,7 +186,30 @@ jobs:
           exit 1
 
       - name: Run golden set
+        if: steps.model_preflight.outputs.skip != 'true'
         run: python eval/eval_runner.py --url http://localhost:8080 --out eval-report.json
+
+      - name: Record skipped evaluation
+        if: steps.model_preflight.outputs.skip == 'true'
+        run: |
+          python3 - <<'PY'
+          import json
+          from datetime import datetime, timezone
+
+          report = {
+              "generated_at": datetime.now(timezone.utc).isoformat(),
+              "url": "http://localhost:8080",
+              "dataset": "eval/golden.yaml",
+              "status": "skipped",
+              "reason": "Model gateway rejected the CI credential (401/403). Renew AGENT_MODEL_API_KEY or the LKEAP package.",
+              "summary": {"total": 0, "passed": 0, "failed": 0, "pass_rate": None},
+              "results": [],
+          }
+          with open("eval-report.json", "w", encoding="utf-8") as fh:
+              json.dump(report, fh, ensure_ascii=False, indent=2)
+          print(report["reason"])
+          PY
+          echo "::notice::Golden-set evaluation skipped: model credentials are unavailable. This is not an agent regression."
 
       - name: Upload evaluation report
         if: always()
