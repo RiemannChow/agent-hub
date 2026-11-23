@@ -135,6 +135,8 @@
         }
         .header-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
         .status { font-size: 12px; color: var(--muted); display: flex; align-items: center; gap: 6px; }
+        .turn-usage { margin-left: 8px; padding: 2px 7px; border-radius: 8px; background: var(--panel-2); color: var(--muted); font-variant-numeric: tabular-nums; }
+        .turn-usage.limit-reached { background: rgba(240, 180, 41, .18); color: var(--tool); }
         .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); transition: background .2s; }
         .dot.on { background: var(--ok); }
         .dot.busy { background: var(--tool); }
@@ -475,7 +477,7 @@
         <header>
             <div class="conv-title" id="convTitle">新对话</div>
             <div class="header-right">
-                <div class="status"><span id="dot" class="dot"></span><span id="statusText">就绪</span></div>
+                <div class="status"><span id="dot" class="dot"></span><span id="statusText">就绪</span><span id="turnUsage" class="turn-usage"></span></div>
                 <button id="logoutBtn" title="退出登录">退出</button>
                 <button id="shareBtn" disabled title="分享 / 转发当前对话">🔗 分享</button>
             </div>
@@ -488,7 +490,7 @@
                 <div class="composer">
                     <textarea id="input" rows="1" placeholder="给 agent-hub 发消息，例如：上月电商 GMV 是多少？"></textarea>
                     <button class="attach-btn" id="attachBtn" title="上传图片或文本文件">＋</button>
-                    <input type="file" id="fileInput" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/*,application/json"/>
+                    <input type="file" id="fileInput" multiple accept="image/png,image/jpeg,image/gif,image/webp,text/*,application/json,application/pdf"/>
                     <div id="attachmentList"></div>
                     <button id="send">发送</button>
                     <button id="stop" class="hidden">停止</button>
@@ -520,6 +522,7 @@
     </div>
 </div>
 
+<script src="/js/markdown.js"></script>
 <script>
 const $ = (id) => document.getElementById(id);
 const messagesEl = $('messages');
@@ -566,75 +569,10 @@ async function loadUser() {
     } catch (_) {}
 }
 
-// ===== 轻量 Markdown 渲染（先转义再解析，杜绝 XSS） =====
-function mdInline(s) {
-    return s
-        .replace(/`([^`]+)`/g, '<code class="md-inline">$1</code>')
-        .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-        .replace(/(^|[^*])\*([^*]+)\*/g, '$1<em>$2</em>')
-        .replace(/(https?:\/\/[^\s<]+)/g, '<a href="$1" target="_blank" rel="noopener">$1</a>');
-}
-function mdCells(line) {
-    return line.slice(1, -1).split('|').map(x => x.trim());
-}
-function mdIsTableSep(line) {
-    return /^\|[\s\-:|]+\|$/.test(line) && line.includes('-');
-}
-function mdHighlight(code) {
-    const kw = 'SELECT|FROM|WHERE|GROUP BY|ORDER BY|LIMIT|JOIN|LEFT|RIGHT|INNER|ON|AS|AND|OR|'
-             + 'INSERT|UPDATE|DELETE|CREATE|DROP|SUM|COUNT|AVG|MAX|MIN|ROUND|CASE|WHEN|THEN|ELSE|END|WITH|DESC|ASC';
-    return code.replace(new RegExp('\\b(' + kw + ')\\b', 'g'), '<span class="k">$1</span>');
-}
-function renderMarkdown(src) {
-    if (!src) return '';
-    const escaped = escapeHtml(src);
-    const codeBlocks = [];
-    const text = escaped.replace(/```([a-zA-Z0-9_+-]*)\n([\s\S]*?)```/g, (m, lang, code) => {
-        const key = '\u0000CODE' + codeBlocks.length + '\u0000';
-        codeBlocks.push('<pre class="md-code"><code>' + mdHighlight(code.replace(/\n$/, '')) + '</code></pre>');
-        return key;
-    });
-    const lines = text.split('\n');
-    let out = '', para = [], list = null, items = [], i = 0;
-    const flushPara = () => {
-        if (para.length) { out += '<p>' + mdInline(para.join('<br>')) + '</p>'; para = []; }
-    };
-    const flushList = () => {
-        if (list) { out += '<' + list + '>' + items.join('') + '</' + list + '>'; list = null; items = []; }
-    };
-    while (i < lines.length) {
-        const line = lines[i], t = line.trim();
-        const codeHit = t.match(/^\u0000CODE(\d+)\u0000$/);
-        if (codeHit) { flushPara(); flushList(); out += codeBlocks[Number(codeHit[1])]; i++; continue; }
-        if (!t) { flushPara(); flushList(); i++; continue; }
-        if (/^\|.*\|$/.test(t) && i + 1 < lines.length && mdIsTableSep(lines[i + 1].trim())) {
-            flushPara(); flushList();
-            const head = mdCells(t), rows = [];
-            i += 2;
-            while (i < lines.length && /^\|.*\|$/.test(lines[i].trim())) {
-                rows.push(mdCells(lines[i].trim())); i++;
-            }
-            out += '<table><thead><tr>' + head.map(c => '<th>' + mdInline(c) + '</th>').join('')
-                 + '</tr></thead><tbody>'
-                 + rows.map(r => '<tr>' + r.map(c => '<td>' + mdInline(c) + '</td>').join('') + '</tr>').join('')
-                 + '</tbody></table>';
-            continue;
-        }
-        const h = t.match(/^(#{1,3})\s+(.*)$/);
-        if (h) { flushPara(); flushList(); out += '<h' + h[1].length + '>' + mdInline(h[2]) + '</h' + h[1].length + '>'; i++; continue; }
-        const ul = t.match(/^[-*]\s+(.*)$/), ol = t.match(/^\d+\.\s+(.*)$/);
-        if (ul || ol) {
-            flushPara();
-            const want = ul ? 'ul' : 'ol';
-            if (list !== want) { flushList(); list = want; }
-            items.push('<li>' + mdInline((ul || ol)[1]) + '</li>'); i++; continue;
-        }
-        if (t.startsWith('&gt;')) { flushPara(); flushList(); out += '<blockquote>' + mdInline(t.slice(4)) + '</blockquote>'; i++; continue; }
-        flushList(); para.push(t); i++;
-    }
-    flushPara(); flushList();
-    return out;
-}
+// ===== Markdown 渲染：从 /js/markdown.js 引入，Node 单测同源码覆盖 =====
+// escapeHtml 保留本地别名，A2UI 卡片与历史消息仍复用同一转义实现。
+const renderMarkdown = MarkdownRenderer.renderMarkdown;
+function escapeHtml(s) { return MarkdownRenderer.escapeHtml(s); }
 
 // ===== 附件选择 =====
 let pendingAttachments = [];
@@ -742,23 +680,42 @@ function addApprovalBlock(ui) {
     const yes = document.createElement('button'); yes.className = 'yes'; yes.textContent = '批准';
     const no = document.createElement('button'); no.textContent = '拒绝';
     const result = document.createElement('div'); result.className = 'ap-result';
-    const decide = async (approve) => {
-        yes.disabled = true; no.disabled = true; result.textContent = '处理中…';
+    const statusUrl = '/api/agent/approvals/' + encodeURIComponent(ui.id);
+    let timer = null;
+    const settle = (text) => {
+        if (timer) { clearInterval(timer); timer = null; }
+        yes.disabled = true; no.disabled = true; result.textContent = text;
+    };
+    // Reloads and a second tab must converge on the same terminal state.
+    const sync = async () => {
         try {
-            const url = '/api/agent/approvals/' + encodeURIComponent(ui.id) + (approve ? '/approve' : '/reject');
-            const resp = await authFetch(url, { method: 'POST' });
+            const resp = await authFetch(statusUrl);
+            if (resp.status === 404) { settle('该审批已处理或已过期，无需重复操作'); return; }
+            if (!resp.ok) return;
             const j = await resp.json();
-            result.textContent = (approve ? '已批准：' : '已拒绝：') + (j.result || '完成');
+            if (j.status && j.status !== 'pending') settle('该审批已处理：' + j.status);
+        } catch (_) { /* transient poll failure: retry on the next tick */ }
+    };
+    const decide = async (approve) => {
+        settle('处理中…');
+        try {
+            const resp = await authFetch(statusUrl + (approve ? '/approve' : '/reject'), { method: 'POST' });
+            const j = await resp.json();
+            settle((approve ? '已批准：' : '已拒绝：') + (j.result || '完成'));
         } catch (err) {
+            if (timer) { clearInterval(timer); timer = null; }
             result.textContent = '操作失败：' + String(err);
             yes.disabled = false; no.disabled = false;
+            timer = setInterval(sync, 3000);
         }
     };
     yes.onclick = () => decide(true);
     no.onclick = () => decide(false);
     actions.appendChild(yes); actions.appendChild(no);
     wrap.appendChild(head); wrap.appendChild(body); wrap.appendChild(actions); wrap.appendChild(result);
-    messagesEl.appendChild(wrap); scrollToBottom(); return wrap;
+    messagesEl.appendChild(wrap); scrollToBottom();
+    sync(); timer = setInterval(sync, 3000);
+    return wrap;
 }
 function addTableBlock(ui) {
     const wrap = document.createElement('div'); wrap.className = 'uiblock';
@@ -979,6 +936,7 @@ async function send() {
     inputEl.value = ''; inputEl.style.height = 'auto';
 
     let agentBubble = null, thinkWrap = null, hadToken = false, lastTool = null, assistantIdx = -1;
+    $('turnUsage').textContent = ''; $('turnUsage').classList.remove('limit-reached');
 
     const payload = JSON.stringify({
         userId: USER_ID, message: text, conversationId: conversationId,
@@ -1030,6 +988,18 @@ async function send() {
                             lastTool = null;
                             currentMessages.push({ type: 'tool_result', toolName: obj.toolName, content: obj.result });
                         }
+                        break;
+                    case 'usage': {
+                        const badge = $('turnUsage');
+                        const used = Number(obj.tokensUsed || 0), budget = Number(obj.budget || 0);
+                        badge.textContent = budget > 0
+                            ? '本轮 ' + used.toLocaleString() + ' / ' + budget.toLocaleString() + ' tokens'
+                            : '本轮 ' + used.toLocaleString() + ' tokens';
+                        badge.classList.toggle('limit-reached', !!obj.exceeded);
+                        break;
+                    }
+                    case 'notice':
+                        addToolCard('提示', obj.message || '', true);
                         break;
                     case 'completed':
                         if (obj.conversationId) { conversationId = obj.conversationId; enableShare(); }

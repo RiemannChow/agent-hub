@@ -148,6 +148,30 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `NEO4J_USER`           | ❌            | `neo4j`                                              | Neo4j 用户。                 |
 | `NEO4J_PASSWORD`       | ❌            | `oceanbase123`                                       | Neo4j 密码（本地演示）。           |
 | `SEEKDB_PASSWORD`      | ❌            | （空）                                                  | SeekDB/OceanBase JDBC 密码。 |
+| `AGENT_QUOTA_ENABLED` | ❌ | `true` | 启用每用户并发与每日 token 配额。 |
+| `AGENT_QUOTA_MAX_CONCURRENT` | ❌ | `2` | 每用户同时进行的轮次上限。 |
+| `AGENT_QUOTA_DAILY_TOKENS` | ❌ | `500000` | 每用户每日 token 预算（自然日重置）。 |
+| `AGENT_QUOTA_MAX_TOKENS_PER_TURN` | ❌ | `0` | 单轮 token 上限；`0` 表示不限制（默认，行为不变）。 |
+| `AGENT_ATTACH_MAX_FILES` | ❌ | `5` | 每轮最多接收的附件数。 |
+| `AGENT_ATTACH_MAX_SINGLE_BYTES` | ❌ | `2097152` | 单个附件解码后的最大字节数。 |
+| `AGENT_ATTACH_MAX_TOTAL_BYTES` | ❌ | `6291456` | 一轮全部附件的最大字节数。 |
+| `AGENT_ATTACH_MAX_TEXT_CHARS` | ❌ | `6000` | 单个附件抽取文本的最大字符数。 |
+| `AGENT_ATTACH_PDF_ENABLED` | ❌ | `true` | 是否允许 PDF 附件（PDFBox 有界文本抽取）。 |
+| `AGENT_ATTACH_MAX_PDF_PAGES` | ❌ | `10` | 单个 PDF 最多扫描页数。 |
+
+### 人在回路、多模态与单轮预算
+
+- 工具触发的审批可由创建者通过 `GET /api/agent/approvals/{id}` 查询状态；聊天卡片轮询该接口，
+  刷新页面或第二个标签页都会收敛到同一终态，过期审批会经命令总线发布为拒绝结果。
+- 输入框支持图片、文本/JSON 与 PDF；上述限制均可通过环境变量配置，PDF 文本抽取同时受页数与
+  字符数约束，解析失败只跳过该附件而不会让整轮对话失败。
+- `AGENT_QUOTA_MAX_TOKENS_PER_TURN` 独立于每日配额，限制单轮 ReAct 的 token 总量。触顶后立即
+  中断后续模型调用，并在 SSE 中下发 `notice` 与 `usage`（已用 token + 预算），前端在顶栏展示。
+  默认 `0` 与改造前行为完全一致。
+
+助手气泡的 Markdown 渲染器位于 `static/js/markdown.js`（先转义再解析、链接仅允许
+`http`/`https`/`mailto`、支持任务列表与代码语言标签），并由 `src/test/js/markdown.test.js`
+的 Node 单测覆盖。
 
 ## 项目结构
 

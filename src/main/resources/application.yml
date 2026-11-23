@@ -170,6 +170,14 @@ agent:
     summary-max-chars: 1200
     summary-timeout: 20s
     summary-cache-size: 512
+  # ============ 多模态附件（图片 / 文本 / PDF） ============
+  attachments:
+    max-files: ${AGENT_ATTACH_MAX_FILES:5}
+    max-single-bytes: ${AGENT_ATTACH_MAX_SINGLE_BYTES:2097152}
+    max-total-bytes: ${AGENT_ATTACH_MAX_TOTAL_BYTES:6291456}
+    max-text-chars: ${AGENT_ATTACH_MAX_TEXT_CHARS:6000}
+    max-pdf-pages: ${AGENT_ATTACH_MAX_PDF_PAGES:10}
+    pdf-enabled: ${AGENT_ATTACH_PDF_ENABLED:true}
   # ============ 限流与配额（每用户） ============
   # 并发名额：同一用户同时在跑的轮次上限，防止「开十个标签页把网关打到限流」。
   # 每日 token：当日累计用量超限后直接拒绝新请求（自然日 0 点重置）。
@@ -178,6 +186,9 @@ agent:
     enabled: ${AGENT_QUOTA_ENABLED:true}
     max-concurrent-turns-per-user: ${AGENT_QUOTA_MAX_CONCURRENT:2}
     daily-token-limit: ${AGENT_QUOTA_DAILY_TOKENS:500000}
+    # 单轮 token 上限：0 = 不限制（默认，与改造前行为一致）。
+    # >0 时在同一轮 ReAct 内累计模型调用 token，触顶即中断，防止一次循环烧光当天额度。
+    max-tokens-per-turn: ${AGENT_QUOTA_MAX_TOKENS_PER_TURN:0}
   # ============ 多实例共享状态（默认 local，保持单实例零依赖） ============
   # redis 模式下配额、A2A 任务/推送配置、审批、在跑轮次、签名 nonce 与 SSE 回放
   # 全部通过 Redis 共享；stop/cancel 与审批决策通过 Redis pub/sub 路由到持有资源的实例。

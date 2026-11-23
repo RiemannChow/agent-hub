@@ -36,6 +36,7 @@ public class ApprovalService {
 
     private final ApprovalStore store;
     private final CommandBus commandBus;
+    private final Duration ttl;
     private final Map<String, PendingAction> actions = new ConcurrentHashMap<>();
 
     public ApprovalService() {
@@ -48,13 +49,19 @@ public class ApprovalService {
     }
 
     public ApprovalService(ApprovalStore store, CommandBus commandBus) {
+        this(store, commandBus, TTL);
+    }
+
+    ApprovalService(ApprovalStore store, CommandBus commandBus, Duration ttl) {
         this.store = store;
         this.commandBus = commandBus;
+        this.ttl = ttl;
     }
 
     private record PendingAction(Supplier<Mono<String>> action, Instant expiresAt) {}
 
-    public record ApprovalView(String id, String tool, String description, String status) {}
+    public record ApprovalView(
+            String id, String tool, String description, String status, Instant expiresAt) {}
 
     /** Registers a pending action and returns its approval id. */
     public String request(
@@ -67,7 +74,7 @@ public class ApprovalService {
             throw new IllegalArgumentException("userId and action are required");
         }
         String id = UUID.randomUUID().toString().replace("-", "");
-        Instant expires = Instant.now().plus(TTL);
+        Instant expires = Instant.now().plus(ttl);
         store.save(new ApprovalMetadata(id, userId, conversationId, tool, description, expires));
         actions.put(id, new PendingAction(action, expires));
         evictIfNeeded();
@@ -81,7 +88,11 @@ public class ApprovalService {
                 .map(
                         meta ->
                                 new ApprovalView(
-                                        meta.id(), meta.tool(), meta.description(), "pending"));
+                                        meta.id(),
+                                        meta.tool(),
+                                        meta.description(),
+                                        "pending",
+                                        meta.expiresAt()));
     }
 
     /** Consumes the approval and executes the side effect, locally or on the owning pod. */
@@ -125,10 +136,25 @@ public class ApprovalService {
         }
     }
 
+    /**
+     * Drops expired actions and publishes a decision so other tabs/replicas can converge on the
+     * same terminal state instead of showing a pending card forever.
+     */
     @Scheduled(fixedDelay = 60_000)
     public void sweep() {
         Instant now = Instant.now();
-        actions.entrySet().removeIf(e -> !now.isBefore(e.getValue().expiresAt()));
+        actions.entrySet()
+                .removeIf(
+                        e -> {
+                            if (now.isBefore(e.getValue().expiresAt())) {
+                                return false;
+                            }
+                            store.remove(e.getKey());
+                            if (commandBus != null) {
+                                commandBus.publishApprovalResult(e.getKey(), "审批已过期，操作未执行", false);
+                            }
+                            return true;
+                        });
     }
 
     private void evictIfNeeded() {
