@@ -1001,6 +1001,12 @@ async function send() {
                     case 'notice':
                         addToolCard('提示', obj.message || '', true);
                         break;
+                    case 'verification':
+                        // 只在发现数值无法追溯时提示；正常轮次不打扰用户
+                        if (obj.grounded === false) {
+                            addToolCard('结果核验', obj.reason || '部分数据未能核验来源', true);
+                        }
+                        break;
                     case 'completed':
                         if (obj.conversationId) { conversationId = obj.conversationId; enableShare(); }
                         setStatus('on', '已连接 · 会话 ' + (conversationId ? conversationId.slice(0,8) : ''));

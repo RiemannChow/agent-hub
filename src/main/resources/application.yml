@@ -298,6 +298,20 @@ agent:
     #   seek_sql_query:
     #     decision: DENY
 
+  # ============ 结果验证（Verify） ============
+  # 在工具结果回填模型前检查契约与可疑内容；轮末核对答案里的数字是否来自工具。
+  verify:
+    enabled: ${AGENT_VERIFY_ENABLED:true}
+    # 验证失败时把原因标注进结果，让模型能主动改路
+    annotate-results: ${AGENT_VERIFY_ANNOTATE:true}
+    # 可疑内容模式（提示注入 / 凭据泄露）；命中即在结果上标注
+    suspicious-patterns:
+      - "ignore previous instructions"
+      - "system prompt"
+      - "api[_-]?key"
+      - "password[=:]"
+      - "-----begin private key-----"
+
   # ============ Neo4j 只读 Cypher 守卫（ob_cypher 工具） ============
   # 改造前只有一条正则黑名单：拦不住 CALL apoc.load.json(...)（SSRF）、
   # CALL apoc.cypher.run('...')（动态执行绕过），却会误杀 WHERE n.name = 'SET'。

@@ -19,5 +19,8 @@ public sealed interface AgentEvent {
     /** 预算触顶等需要用户可见的本轮提示（不写入助手正文）。 */
     record Notice(String message) implements AgentEvent {}
 
+    /** 轮末验证结论。{@code grounded=false} 表示答案里出现了工具结果中不存在的数字。 该事件只告知，不改变助手正文。 */
+    record Verification(boolean grounded, int toolCalls, String reason) implements AgentEvent {}
+
     record Completed(String conversationId) implements AgentEvent {}
 }

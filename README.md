@@ -173,6 +173,8 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `AGENT_ATTACH_PDF_ENABLED` | ❌ | `true` | Allow PDF attachments (bounded text extraction via PDFBox). |
 | `AGENT_ATTACH_MAX_PDF_PAGES` | ❌ | `10` | Max PDF pages scanned per attachment. |
 | `AGENT_CONSTRAIN_ENABLED` | ❌ | `true` | Enable the pre-execution tool policy gate. |
+| `AGENT_VERIFY_ENABLED` | ❌ | `true` | Enable tool-result verification and answer grounding. |
+| `AGENT_VERIFY_ANNOTATE` | ❌ | `true` | Annotate failed verification into the tool result. |
 
 ### Constrain: least-privilege tool policies
 
@@ -184,6 +186,15 @@ human-readable reason so the model can recover. Built-in policies cover every bu
 default configuration preserves existing behaviour. `agent.constrain.policies.<tool>.decision`
 can override a decision (e.g. temporarily deny a tool) without a code change. High-risk write
 tools are marked `ASK` and still go through the existing `ApprovalService` inside the tool.
+
+### Verify: result contracts and answer grounding
+
+- `VerificationGate` checks every tool result before it is fed back to the model: empty results,
+  unreasonable numbers and suspicious payloads (prompt injection / credential leaks) are annotated
+  with a readable reason so the model can switch tools or explain the limitation.
+- A per-turn `verification` SSE event reports whether numeric claims in the answer are traceable
+  to a tool result. The UI only surfaces it when grounding fails; grounded turns are unaffected.
+- Built-in checks are non-blocking: they never rewrite the assistant answer or fail a turn.
 
 ### Human-in-the-loop, attachments and per-turn budget
 
