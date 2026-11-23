@@ -2,6 +2,7 @@ package com.riemann.agent.infrastructure.seekdb;
 
 import com.riemann.agent.application.AgentEventMapper;
 import com.riemann.agent.application.MemoryService;
+import com.riemann.agent.application.quota.AgentQuotaProperties;
 import com.riemann.agent.domain.AgentEvent;
 import com.riemann.agent.domain.AgentOrchestrationService;
 import com.riemann.agent.domain.Conversation;
@@ -13,6 +14,7 @@ import com.riemann.agent.infrastructure.execution.TurnCancellationService;
 import com.riemann.agent.infrastructure.execution.TurnTimeout;
 import com.riemann.agent.infrastructure.metrics.AgentMetrics;
 import com.riemann.agent.infrastructure.metrics.TurnTelemetry;
+import com.riemann.agent.infrastructure.metrics.TurnTokenBudget;
 import com.riemann.agent.infrastructure.observability.LangfuseSpanAttributes;
 import com.riemann.agent.infrastructure.toolkit.tools.AgentCallContext;
 import com.riemann.agent.infrastructure.toolkit.tools.SandboxState;
@@ -50,6 +52,7 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
     private final ContextWindowAssembler contextAssembler;
     private final AttachmentProcessor attachmentProcessor;
     private final SeekDbConversationRepository seekDb;
+    private final AgentQuotaProperties quotaProperties;
 
     public ReActAgentOrchestrationServiceImpl(
             ReActAgent reactAgent,
@@ -62,7 +65,8 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
             AgentMetrics metrics,
             ContextWindowAssembler contextAssembler,
             SeekDbConversationRepository seekDb,
-            AttachmentProcessor attachmentProcessor) {
+            AttachmentProcessor attachmentProcessor,
+            AgentQuotaProperties quotaProperties) {
         this.reactAgent = reactAgent;
         this.mapper = mapper;
         this.memoryService = memoryService;
@@ -74,6 +78,7 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         this.contextAssembler = contextAssembler;
         this.attachmentProcessor = attachmentProcessor;
         this.seekDb = seekDb;
+        this.quotaProperties = quotaProperties;
     }
 
     @Override
@@ -173,22 +178,50 @@ public class ReActAgentOrchestrationServiceImpl implements AgentOrchestrationSer
         SandboxState sandboxState = new SandboxState();
         rc.put(SandboxState.class, sandboxState);
 
+        // 单轮 token 预算：每轮独立实例，limit<=0 时 record() 永不触顶，行为与改造前一致。
+        TurnTokenBudget budget = new TurnTokenBudget(quotaProperties.getMaxTokensPerTurn());
         // AgentScope Java 2.0：streamEvents(List<Msg>, RuntimeContext) 返回 Flux<AgentEvent>（框架事件）
         // 旁路计量：模型 token 用量 / 工具调用结果 / 每日配额累加，都不改变事件本身
+        // 预算触顶时回调 interrupt：ReAct 循环在下次迭代前停下，不再发起新的模型调用。
         Flux<io.agentscope.core.event.AgentEvent> upstream =
-                telemetry.instrument(reactAgent.streamEvents(history, rc), userId);
+                telemetry.instrument(
+                        reactAgent.streamEvents(history, rc),
+                        userId,
+                        budget,
+                        () -> reactAgent.interrupt(userId, sessionId));
         // 注意：必须用 mapNotNull 而非 map().filter()。Reactor 的 map 不允许 mapper 返回 null，
         // 而 AgentEventMapper 对未映射的框架事件返回 null，会抛
         // “The mapper returned a null value” -> NullPointerException /
         // UnsupportedOperationException。
         Flux<AgentEvent> domain = upstream.mapNotNull(mapper::toDomain);
         // 整轮总时长上限：到点截断并补说明，保证前端一定收到 completed，不会无限转圈
-        Flux<AgentEvent> timed =
-                TurnTimeout.apply(domain, executionProperties.getTurnTimeout())
+        Flux<AgentEvent> timed = TurnTimeout.apply(domain, executionProperties.getTurnTimeout());
+        // 轮末追加用量与提示：usage 始终下发（默认 budget=0 表示不限制），
+        // 只有触顶时才多一条 notice，前端据此显示「已按预算停止」的明确说明。
+        Flux<AgentEvent> withUsage =
+                timed.concatWith(
+                                Flux.defer(
+                                        () -> {
+                                            if (budget.exceeded()) {
+                                                return Flux.just(
+                                                        new AgentEvent.Notice(
+                                                                "本轮 token 用量已达上限（"
+                                                                        + budget.limit()
+                                                                        + "），后续模型调用已停止。"
+                                                                        + "可以缩小问题范围或稍后重试。"),
+                                                        new AgentEvent.Usage(
+                                                                budget.used(),
+                                                                budget.limit(),
+                                                                true));
+                                            }
+                                            return Flux.just(
+                                                    new AgentEvent.Usage(
+                                                            budget.used(), budget.limit(), false));
+                                        }))
                         .concatWithValues(new AgentEvent.Completed(conversationId));
         // 轮末兜底：若 agent 只 fork 了沙箱却没调用 commit/discard（出错、或模型忘了收口），
         // 这里把仍残留的沙箱库 DROP 掉，避免「fork 出来的数据库」越积越多、跨轮串味。
-        return timed.doFinally(
+        return withUsage.doFinally(
                 signal -> {
                     String leftover = sandboxState.activeSandbox();
                     if (leftover != null && !leftover.isBlank()) {
