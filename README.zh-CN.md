@@ -158,6 +158,16 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `AGENT_ATTACH_MAX_TEXT_CHARS` | ❌ | `6000` | 单个附件抽取文本的最大字符数。 |
 | `AGENT_ATTACH_PDF_ENABLED` | ❌ | `true` | 是否允许 PDF 附件（PDFBox 有界文本抽取）。 |
 | `AGENT_ATTACH_MAX_PDF_PAGES` | ❌ | `10` | 单个 PDF 最多扫描页数。 |
+| `AGENT_CONSTRAIN_ENABLED` | ❌ | `true` | 启用工具执行前策略门禁。 |
+
+### Constrain：最小权限工具策略
+
+每次工具调用在真实工具方法执行前都要经过 `ConstrainedAgentTool`。策略在 `ToolPolicyRegistry`
+中声明（allow/deny/ask、风险等级、必填参数、取值白名单、长度与委托深度上限）。未声明策略的工具
+以及拿不到调用者上下文的请求一律**默认拒绝**；被拒调用根本不会执行，而是返回带可读原因的
+`DENIED` 结果供模型自行改路。内置策略覆盖所有项目自带工具，因此默认配置保持原有行为。
+`agent.constrain.policies.<tool>.decision` 可在不改代码的情况下覆盖决策（例如临时下线某工具）。
+高风险写工具标记为 `ASK`，仍由工具内部的 `ApprovalService` 完成人工审批。
 
 ### 人在回路、多模态与单轮预算
 

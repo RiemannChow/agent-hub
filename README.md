@@ -172,6 +172,18 @@ java -jar target/agent-hub-1.0.0.jar --spring.profiles.active=oceanbase
 | `AGENT_ATTACH_MAX_TEXT_CHARS` | ❌ | `6000` | Max extracted text characters per attachment. |
 | `AGENT_ATTACH_PDF_ENABLED` | ❌ | `true` | Allow PDF attachments (bounded text extraction via PDFBox). |
 | `AGENT_ATTACH_MAX_PDF_PAGES` | ❌ | `10` | Max PDF pages scanned per attachment. |
+| `AGENT_CONSTRAIN_ENABLED` | ❌ | `true` | Enable the pre-execution tool policy gate. |
+
+### Constrain: least-privilege tool policies
+
+Every tool call passes through `ConstrainedAgentTool` before the real tool method runs. Policies
+are declared in `ToolPolicyRegistry` (allow/deny/ask, risk level, required parameters, value
+allowlists, length and delegation-depth caps). Unknown tools and calls with no caller context are
+**denied by default**; a denied call is never executed and returns a `DENIED` tool result with a
+human-readable reason so the model can recover. Built-in policies cover every bundled tool, so the
+default configuration preserves existing behaviour. `agent.constrain.policies.<tool>.decision`
+can override a decision (e.g. temporarily deny a tool) without a code change. High-risk write
+tools are marked `ASK` and still go through the existing `ApprovalService` inside the tool.
 
 ### Human-in-the-loop, attachments and per-turn budget
 

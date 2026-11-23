@@ -4,6 +4,9 @@ import com.riemann.agent.application.AgentPersonaProvider;
 import com.riemann.agent.domain.AgentPersona;
 import com.riemann.agent.infrastructure.observability.AgentScopeMiddlewareChain;
 import com.riemann.agent.infrastructure.toolkit.ToolResultGovernor;
+import com.riemann.agent.infrastructure.toolkit.policy.ConstrainAudit;
+import com.riemann.agent.infrastructure.toolkit.policy.ConstrainGate;
+import com.riemann.agent.infrastructure.toolkit.policy.ConstrainedAgentTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SaveMemoryTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekBookCountByYearTool;
 import com.riemann.agent.infrastructure.toolkit.tools.SeekBookSearchTool;
@@ -46,7 +49,9 @@ public class AgentConfig {
             SeekBookCountByYearTool seekBookCountByYearTool,
             SaveMemoryTool saveMemoryTool,
             @Qualifier("toolExecutionConfig") ExecutionConfig toolExecutionConfig,
-            @Value("${agent.toolkit.parallel:true}") boolean parallel) {
+            @Value("${agent.toolkit.parallel:true}") boolean parallel,
+            ConstrainGate constrainGate,
+            ConstrainAudit constrainAudit) {
         Toolkit toolkit =
                 new Toolkit(
                         ToolkitConfig.builder()
@@ -67,7 +72,33 @@ public class AgentConfig {
         toolkit.registerTool(seekBookSearchTool);
         toolkit.registerTool(seekBookCountByYearTool);
         toolkit.registerTool(saveMemoryTool);
+        // 统一包一层执行前门禁：取回框架为每个 @Tool 方法生成的 AgentTool，
+        // 换成 ConstrainedAgentTool。这样连「一个类多个工具方法」也自动覆盖。
+        constrainAll(toolkit, constrainGate, constrainAudit);
         return toolkit;
+    }
+
+    /**
+     * 把 Toolkit 中当前所有工具替换为门禁版本。
+     *
+     * <p>{@code @Tool} 是方法级注解，硬编码工具名单会漂移；遍历 {@code getToolNames()} 以框架实际注册结果为准，多工具方法类（如
+     * seek_write/commit/discard_sandbox）同样覆盖。
+     */
+    public static void constrainAll(Toolkit toolkit, ConstrainGate gate, ConstrainAudit audit) {
+        for (String name : new java.util.ArrayList<>(toolkit.getToolNames())) {
+            io.agentscope.core.tool.AgentTool registered = toolkit.getTool(name);
+            if (registered instanceof ConstrainedAgentTool) {
+                continue;
+            }
+            toolkit.removeTool(name);
+            toolkit.registerAgentTool(new ConstrainedAgentTool(registered, gate, audit));
+        }
+    }
+
+    /** 供 A2A 注册器复用：把动态工具也纳入同一道门禁。 */
+    public static io.agentscope.core.tool.AgentTool constrain(
+            io.agentscope.core.tool.AgentTool delegate, ConstrainGate gate, ConstrainAudit audit) {
+        return new ConstrainedAgentTool(delegate, gate, audit);
     }
 
     /**

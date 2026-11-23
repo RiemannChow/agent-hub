@@ -288,6 +288,16 @@ agent:
       # 同一工具本轮连续失败多少次后熔断（后续只回填「禁止重试」）
       max-consecutive-failures: ${AGENT_TOOL_MAX_CONSECUTIVE_FAILURES:3}
 
+  # ============ 执行前工具策略门禁（Constrain） ============
+  # 内置策略覆盖项目自带工具；未声明策略的工具一律默认拒绝（最小权限）。
+  # policies.<tool-name>.decision 可覆盖内置决策：ALLOW / DENY / ASK。
+  constrain:
+    enabled: ${AGENT_CONSTRAIN_ENABLED:true}
+    # 示例：临时下线某个工具
+    # policies:
+    #   seek_sql_query:
+    #     decision: DENY
+
   # ============ Neo4j 只读 Cypher 守卫（ob_cypher 工具） ============
   # 改造前只有一条正则黑名单：拦不住 CALL apoc.load.json(...)（SSRF）、
   # CALL apoc.cypher.run('...')（动态执行绕过），却会误杀 WHERE n.name = 'SET'。
