@@ -70,6 +70,11 @@ spring:
 # ============ Agent Persona（切换行业只需改这里） ============
 # 该文档不带 on-profile，对所有 profile 均生效（seekdb / mongo 都能读到 agent.*）
 agent:
+  # ============ 配置版本与灰度规则（第一刀：快照 + FeatureGate） ============
+  config:
+    version: ${AGENT_CONFIG_VERSION:local}
+  features:
+    flags: {}
   # ============ 登录安全：短信网关 / 微信回调 / CSRF ============
   # demo 模式仅用于本地演示（验证码在响应中回传）；生产必须切到 http 并关闭微信模拟确认。
   auth:
