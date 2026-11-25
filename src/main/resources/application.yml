@@ -70,6 +70,11 @@ spring:
 # ============ Agent Persona（切换行业只需改这里） ============
 # 该文档不带 on-profile，对所有 profile 均生效（seekdb / mongo 都能读到 agent.*）
 agent:
+  # ============ 配置版本与灰度规则（第一刀：快照 + FeatureGate） ============
+  config:
+    version: ${AGENT_CONFIG_VERSION:local}
+  features:
+    flags: {}
   # ============ 登录安全：短信网关 / 微信回调 / CSRF ============
   # demo 模式仅用于本地演示（验证码在响应中回传）；生产必须切到 http 并关闭微信模拟确认。
   auth:
@@ -136,6 +141,12 @@ agent:
     tool:
       timeout: ${AGENT_TOOL_TIMEOUT:30s}
       max-attempts: ${AGENT_TOOL_MAX_ATTEMPTS:1}
+  # ============ AgentLoop 运行时参数 ============
+  # 第一刀：把 previously hard-coded 的 maxIters 外置为配置；默认值与改造前一致。
+  # 后续阶段会在此处加入 recovery / native 能力的灰度开关。
+  loop:
+    max-iters: ${AGENT_LOOP_MAX_ITERS:30}
+    checkpoint-history-size: ${AGENT_LOOP_CHECKPOINT_HISTORY_SIZE:16}
   # ============ 工具注册表（第一刀：版本元数据与审计） ============
   tools:
     seed-built-ins: ${AGENT_TOOLS_SEED_BUILT_INS:true}

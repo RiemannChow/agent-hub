@@ -2,6 +2,9 @@ package com.riemann.agent.infrastructure.config;
 
 import com.riemann.agent.application.AgentPersonaProvider;
 import com.riemann.agent.domain.AgentPersona;
+import com.riemann.agent.infrastructure.loop.AgentLoopProperties;
+import com.riemann.agent.infrastructure.loop.AgentScopeLoopEngine;
+import com.riemann.agent.infrastructure.loop.LoopEngine;
 import com.riemann.agent.infrastructure.observability.AgentScopeMiddlewareChain;
 import com.riemann.agent.infrastructure.toolkit.ToolResultGovernor;
 import com.riemann.agent.infrastructure.toolkit.policy.ConstrainAudit;
@@ -127,6 +130,7 @@ public class AgentConfig {
             @Qualifier("modelExecutionConfig") ExecutionConfig modelExecutionConfig,
             @Qualifier("toolExecutionConfig") ExecutionConfig toolExecutionConfig,
             FallbackModelHolder fallbackModelHolder,
+            AgentLoopProperties loopProperties,
             @Value("${agent.native.task-list:false}") boolean enableTaskList,
             @Value("${agent.native.meta-tool:false}") boolean enableMetaTool,
             @Value("${agent.native.pending-tool-recovery:false}")
@@ -139,7 +143,7 @@ public class AgentConfig {
                         .sysPrompt(persona.renderSystemPrompt())
                         .model(agentModel)
                         .toolkit(agentToolkit)
-                        .maxIters(30)
+                        .maxIters(loopProperties.getMaxIters())
                         // 超时/重试：显式下发，避免沿用框架「模型 5 分钟、工具 5 分钟」的宽兜底默认值
                         .modelExecutionConfig(modelExecutionConfig)
                         .toolExecutionConfig(toolExecutionConfig)
@@ -160,5 +164,11 @@ public class AgentConfig {
         // 可观测性（Langfuse）：仅 langfuse.enabled=true 时容器里才有该链，否则保持零开销
         middlewareChain.ifAvailable(chain -> chain.middlewares().forEach(builder::middleware));
         return builder.build();
+    }
+
+    /** Exposes the current ReActAgent through the new LoopEngine SPI. */
+    @Bean
+    public LoopEngine seekdbLoopEngine(ReActAgent reactAgent) {
+        return new AgentScopeLoopEngine(reactAgent);
     }
 }
