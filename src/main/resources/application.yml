@@ -136,6 +136,12 @@ agent:
     tool:
       timeout: ${AGENT_TOOL_TIMEOUT:30s}
       max-attempts: ${AGENT_TOOL_MAX_ATTEMPTS:1}
+  # ============ AgentLoop 运行时参数 ============
+  # 第一刀：把 previously hard-coded 的 maxIters 外置为配置；默认值与改造前一致。
+  # 后续阶段会在此处加入 recovery / native 能力的灰度开关。
+  loop:
+    max-iters: ${AGENT_LOOP_MAX_ITERS:30}
+    checkpoint-history-size: ${AGENT_LOOP_CHECKPOINT_HISTORY_SIZE:16}
   # ============ SQL 守卫：LLM 生成的 SQL 下发前必须过的静态校验 ============
   # 只放行「单条 SELECT + 白名单表 + 无危险函数」，并强制在外层包一层 LIMIT。
   # 白名单刻意不含 conversation / message / memory —— 这些表存放其他用户的会话与隐私。
