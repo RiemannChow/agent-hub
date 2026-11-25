@@ -211,6 +211,10 @@ agent:
     backend: ${AGENT_STATE_BACKEND:local}
     key-prefix: ${AGENT_STATE_KEY_PREFIX:agent-hub}
     command-timeout: ${AGENT_STATE_COMMAND_TIMEOUT:3s}
+    # ============ 状态可靠性（第一刀：幂等键 + outbox 影子写入） ============
+    reliability:
+      idempotency-ttl: ${AGENT_STATE_IDEMPOTENCY_TTL:10m}
+      outbox-capacity: ${AGENT_STATE_OUTBOX_CAPACITY:512}
   # ============ 图书混合检索（Java 版） ============
   books:
     # 数据集文件名（sql/ 目录或 classpath 均可），对应 Kaggle: Amazon Top 50 Bestselling Books 2009-2019
