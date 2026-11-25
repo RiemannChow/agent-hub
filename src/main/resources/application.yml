@@ -151,6 +151,9 @@ agent:
   tools:
     seed-built-ins: ${AGENT_TOOLS_SEED_BUILT_INS:true}
     audit-capacity-per-run: ${AGENT_TOOLS_AUDIT_CAPACITY_PER_RUN:256}
+  # ============ 执行上下文与事件日志（第一刀：关联 ID 与可查询事件） ============
+  eventlog:
+    capacity-per-run: ${AGENT_EVENTLOG_CAPACITY_PER_RUN:512}
   # ============ SQL 守卫：LLM 生成的 SQL 下发前必须过的静态校验 ============
   # 只放行「单条 SELECT + 白名单表 + 无危险函数」，并强制在外层包一层 LIMIT。
   # 白名单刻意不含 conversation / message / memory —— 这些表存放其他用户的会话与隐私。
