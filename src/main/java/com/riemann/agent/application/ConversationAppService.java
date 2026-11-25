@@ -11,6 +11,9 @@ import com.riemann.agent.domain.ConversationId;
 import com.riemann.agent.domain.ConversationRepository;
 import com.riemann.agent.domain.Message;
 import com.riemann.agent.infrastructure.state.CommandBus;
+import com.riemann.agent.infrastructure.state.IdempotencyGuard;
+import com.riemann.agent.infrastructure.state.OutboxEvent;
+import com.riemann.agent.infrastructure.state.OutboxStore;
 import java.time.Duration;
 import java.time.Instant;
 import java.util.ArrayList;
@@ -38,6 +41,8 @@ public class ConversationAppService {
     private final MemoryService memoryService;
     private final AgentQuotaService quota;
     private final CommandBus commandBus;
+    private final IdempotencyGuard idempotencyGuard;
+    private final OutboxStore outboxStore;
 
     public ConversationAppService(
             ConversationRepository repository,
@@ -45,7 +50,15 @@ public class ConversationAppService {
             MemoryExtractor memoryExtractor,
             MemoryService memoryService,
             AgentQuotaService quota) {
-        this(repository, orchestration, memoryExtractor, memoryService, quota, (CommandBus) null);
+        this(
+                repository,
+                orchestration,
+                memoryExtractor,
+                memoryService,
+                quota,
+                (CommandBus) null,
+                null,
+                null);
     }
 
     @Autowired
@@ -55,14 +68,18 @@ public class ConversationAppService {
             MemoryExtractor memoryExtractor,
             MemoryService memoryService,
             AgentQuotaService quota,
-            ObjectProvider<CommandBus> commandBus) {
+            ObjectProvider<CommandBus> commandBus,
+            ObjectProvider<IdempotencyGuard> idempotencyGuard,
+            ObjectProvider<OutboxStore> outboxStore) {
         this(
                 repository,
                 orchestration,
                 memoryExtractor,
                 memoryService,
                 quota,
-                commandBus.getIfAvailable());
+                commandBus.getIfAvailable(),
+                idempotencyGuard.getIfAvailable(),
+                outboxStore.getIfAvailable());
     }
 
     private ConversationAppService(
@@ -71,13 +88,17 @@ public class ConversationAppService {
             MemoryExtractor memoryExtractor,
             MemoryService memoryService,
             AgentQuotaService quota,
-            CommandBus commandBus) {
+            CommandBus commandBus,
+            IdempotencyGuard idempotencyGuard,
+            OutboxStore outboxStore) {
         this.repository = repository;
         this.orchestration = orchestration;
         this.memoryExtractor = memoryExtractor;
         this.memoryService = memoryService;
         this.quota = quota;
         this.commandBus = commandBus;
+        this.idempotencyGuard = idempotencyGuard;
+        this.outboxStore = outboxStore;
     }
 
     /**
@@ -131,12 +152,27 @@ public class ConversationAppService {
                     Message.UserMessage userMsg =
                             new Message.UserMessage(conv.id().value(), userInput, Instant.now());
                     Conversation withUser = conv.addMessage(userMsg);
+                    String clientMessageId =
+                            attributes.get("clientMessageId") instanceof String value
+                                            && !value.isBlank()
+                                    ? value
+                                    : null;
+                    String idempotencyKey =
+                            clientMessageId == null
+                                    ? null
+                                    : conv.id().value() + ":" + clientMessageId;
+                    boolean shouldPersistUser =
+                            idempotencyKey == null
+                                    || idempotencyGuard == null
+                                    || idempotencyGuard.tryAcquire(idempotencyKey);
                     Mono<Void> persistUser =
-                            repository
-                                    .save(withUser)
-                                    .then(
-                                            repository.appendMessages(
-                                                    withUser.id(), List.of(userMsg)));
+                            shouldPersistUser
+                                    ? repository
+                                            .save(withUser)
+                                            .then(
+                                                    repository.appendMessages(
+                                                            withUser.id(), List.of(userMsg)))
+                                    : Mono.empty();
 
                     // 2) 驱动编排（注入完整历史），并捕获本轮产生的工具/助手消息用于持久化
                     List<Message> captured = new ArrayList<>();
@@ -176,6 +212,19 @@ public class ConversationAppService {
                                                                         text,
                                                                         Instant.ofEpochMilli(
                                                                                 seq[0]++)));
+                                                    }
+                                                    if (outboxStore != null) {
+                                                        outboxStore.enqueue(
+                                                                OutboxEvent.of(
+                                                                        conv.id().value(),
+                                                                        "MESSAGES_APPEND",
+                                                                        "count="
+                                                                                + captured.size()));
+                                                        outboxStore.enqueue(
+                                                                OutboxEvent.of(
+                                                                        conv.id().value(),
+                                                                        "AGENT_STATE_UPDATE",
+                                                                        "status=IDLE"));
                                                     }
                                                     // 持久化本轮产生的工具/助手消息（增量，避免重复插入历史）
                                                     repository
