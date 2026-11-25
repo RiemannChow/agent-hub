@@ -1,6 +1,9 @@
 package com.riemann.agent.infrastructure.observability;
 
 import com.riemann.agent.infrastructure.execution.ExecutionContext;
+import com.riemann.agent.infrastructure.execution.ExecutionContextHolder;
+import com.riemann.agent.infrastructure.toolkit.registry.ToolRegistry;
+import com.riemann.agent.infrastructure.toolkit.registry.ToolVersionAttributes;
 import io.agentscope.core.agent.Agent;
 import io.agentscope.core.agent.RuntimeContext;
 import io.agentscope.core.event.AgentEvent;
@@ -48,9 +51,15 @@ public class LangfuseEnrichmentMiddleware implements MiddlewareBase {
     private static final int ACCUMULATE_LIMIT = 32_000;
 
     private final LangfuseProperties props;
+    private final ToolRegistry toolRegistry;
 
     public LangfuseEnrichmentMiddleware(LangfuseProperties props) {
+        this(props, null);
+    }
+
+    public LangfuseEnrichmentMiddleware(LangfuseProperties props, ToolRegistry toolRegistry) {
         this.props = props;
+        this.toolRegistry = toolRegistry;
     }
 
     @Override
@@ -76,7 +85,7 @@ public class LangfuseEnrichmentMiddleware implements MiddlewareBase {
                                 span,
                                 LangfuseSpanAttributes.KEY_ENVIRONMENT,
                                 props.getEnvironment());
-                        stampTraceContext(span, runtimeContext);
+                        stampTraceContext(span, runtimeContext, ctxView);
                         if (props.isCaptureContent()) {
                             setIfPresent(
                                     span,
@@ -127,7 +136,7 @@ public class LangfuseEnrichmentMiddleware implements MiddlewareBase {
                                     LangfuseSpanAttributes.KEY_OBSERVATION_MODEL_NAME,
                                     model.getModelName());
                         }
-                        stampTraceContext(span, runtimeContext);
+                        stampTraceContext(span, runtimeContext, ctxView);
                         if (props.isCaptureContent()) {
                             setIfPresent(
                                     span,
@@ -169,7 +178,21 @@ public class LangfuseEnrichmentMiddleware implements MiddlewareBase {
                         span.setAttribute(
                                 LangfuseSpanAttributes.KEY_OBSERVATION_TYPE,
                                 LangfuseSpanAttributes.TYPE_TOOL);
-                        stampTraceContext(span, runtimeContext);
+                        if (toolRegistry != null
+                                && input.toolCalls() != null
+                                && !input.toolCalls().isEmpty()) {
+                            String toolName = input.toolCalls().get(0).getName();
+                            setIfPresent(span, ToolVersionAttributes.KEY_TOOL_NAME, toolName);
+                            toolRegistry
+                                    .resolve(toolName)
+                                    .ifPresent(
+                                            descriptor ->
+                                                    setIfPresent(
+                                                            span,
+                                                            ToolVersionAttributes.KEY_TOOL_VERSION,
+                                                            descriptor.version()));
+                        }
+                        stampTraceContext(span, runtimeContext, ctxView);
                         if (props.isCaptureContent()) {
                             setIfPresent(
                                     span,
@@ -214,42 +237,54 @@ public class LangfuseEnrichmentMiddleware implements MiddlewareBase {
      *
      * <p>Langfuse 的按会话、按用户筛选依赖这些属性出现在 trace 内每个 span 上， 只写根 span 会导致过滤结果不全。
      */
-    private void stampTraceContext(Span span, RuntimeContext runtimeContext) {
-        if (runtimeContext == null) {
-            return;
-        }
-        String sessionId = null;
-        try {
-            Object stashed = runtimeContext.get(LangfuseSpanAttributes.RUNTIME_SESSION_ID);
-            if (stashed != null) {
-                sessionId = String.valueOf(stashed);
+    private void stampTraceContext(
+            Span span, RuntimeContext runtimeContext, ContextView reactorContext) {
+        if (runtimeContext != null) {
+            String sessionId = null;
+            try {
+                Object stashed = runtimeContext.get(LangfuseSpanAttributes.RUNTIME_SESSION_ID);
+                if (stashed != null) {
+                    sessionId = String.valueOf(stashed);
+                }
+            } catch (RuntimeException ignored) {
+                // RuntimeContext 未持有该键时按无会话处理
             }
-        } catch (RuntimeException ignored) {
-            // RuntimeContext 未持有该键时按无会话处理
-        }
-        if (sessionId == null || sessionId.isBlank()) {
-            // 兜底：本项目的 RuntimeContext.sessionId 是「每轮唯一」，仅在没有显式会话 id 时使用
-            sessionId = runtimeContext.getSessionId();
-        }
-        if (sessionId != null && !sessionId.isBlank()) {
-            span.setAttribute(LangfuseSpanAttributes.KEY_SESSION_ID, sessionId);
-        }
-        String userId = runtimeContext.getUserId();
-        if (userId != null && !userId.isBlank()) {
-            span.setAttribute(LangfuseSpanAttributes.KEY_USER_ID, userId);
-        }
-        try {
-            Object value = runtimeContext.get(ExecutionContext.RUNTIME_KEY);
-            if (value instanceof ExecutionContext executionContext) {
-                setIfPresent(span, LangfuseSpanAttributes.KEY_RUN_ID, executionContext.runId());
-                setIfPresent(span, LangfuseSpanAttributes.KEY_STEP_ID, executionContext.stepId());
-                setIfPresent(
-                        span,
-                        LangfuseSpanAttributes.KEY_CONFIG_VERSION,
-                        executionContext.configVersion());
+            if (sessionId == null || sessionId.isBlank()) {
+                // 兜底：本项目的 RuntimeContext.sessionId 是「每轮唯一」，仅在没有显式会话 id 时使用
+                sessionId = runtimeContext.getSessionId();
             }
-        } catch (RuntimeException ignored) {
-            // ExecutionContext is optional in this slice; absence must not break tracing.
+            if (sessionId != null && !sessionId.isBlank()) {
+                span.setAttribute(LangfuseSpanAttributes.KEY_SESSION_ID, sessionId);
+            }
+            String userId = runtimeContext.getUserId();
+            if (userId != null && !userId.isBlank()) {
+                span.setAttribute(LangfuseSpanAttributes.KEY_USER_ID, userId);
+            }
+        }
+
+        // 优先读 RuntimeContext（显式注入），再回退到 WebFilter 写入的 Reactor Context。
+        // 两者都不存在时保持静默，避免可观测性代码影响主链路。
+        ExecutionContext executionContext = null;
+        if (runtimeContext != null) {
+            try {
+                Object value = runtimeContext.get(ExecutionContext.RUNTIME_KEY);
+                if (value instanceof ExecutionContext context) {
+                    executionContext = context;
+                }
+            } catch (RuntimeException ignored) {
+                // ExecutionContext is optional in this slice; absence must not break tracing.
+            }
+        }
+        if (executionContext == null && reactorContext != null) {
+            executionContext = ExecutionContextHolder.current(reactorContext).orElse(null);
+        }
+        if (executionContext != null) {
+            setIfPresent(span, LangfuseSpanAttributes.KEY_RUN_ID, executionContext.runId());
+            setIfPresent(span, LangfuseSpanAttributes.KEY_STEP_ID, executionContext.stepId());
+            setIfPresent(
+                    span,
+                    LangfuseSpanAttributes.KEY_CONFIG_VERSION,
+                    executionContext.configVersion());
         }
     }
 

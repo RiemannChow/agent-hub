@@ -3,6 +3,9 @@ package com.riemann.agent.infrastructure.neo4j;
 import com.riemann.agent.application.AgentPersonaProvider;
 import com.riemann.agent.domain.AgentPersona;
 import com.riemann.agent.infrastructure.config.FallbackModelHolder;
+import com.riemann.agent.infrastructure.loop.AgentLoopProperties;
+import com.riemann.agent.infrastructure.loop.AgentScopeLoopEngine;
+import com.riemann.agent.infrastructure.loop.LoopEngine;
 import com.riemann.agent.infrastructure.observability.AgentScopeMiddlewareChain;
 import com.riemann.agent.infrastructure.toolkit.ToolResultGovernor;
 import io.agentscope.core.ReActAgent;
@@ -62,7 +65,8 @@ public class OceanBaseAgentConfig {
             ObjectProvider<ToolResultGovernor> toolGovernor,
             @Qualifier("modelExecutionConfig") ExecutionConfig modelExecutionConfig,
             @Qualifier("toolExecutionConfig") ExecutionConfig toolExecutionConfig,
-            FallbackModelHolder fallbackModelHolder) {
+            FallbackModelHolder fallbackModelHolder,
+            AgentLoopProperties loopProperties) {
         AgentPersona persona = personaProvider.getPersona();
 
         ReActAgent.Builder builder =
@@ -71,7 +75,7 @@ public class OceanBaseAgentConfig {
                         .sysPrompt(persona.renderSystemPrompt())
                         .model(agentModel)
                         .toolkit(agentToolkit)
-                        .maxIters(30)
+                        .maxIters(loopProperties.getMaxIters())
                         // 超时/重试：与 seekdb 侧共用同一份 agent.execution.* 配置
                         .modelExecutionConfig(modelExecutionConfig)
                         .toolExecutionConfig(toolExecutionConfig);
@@ -83,5 +87,11 @@ public class OceanBaseAgentConfig {
         // 可观测性（Langfuse）：仅 langfuse.enabled=true 时容器里才有该链
         middlewareChain.ifAvailable(chain -> chain.middlewares().forEach(builder::middleware));
         return builder.build();
+    }
+
+    /** Exposes the OceanBase ReActAgent through the new LoopEngine SPI. */
+    @Bean
+    public LoopEngine oceanBaseLoopEngine(ReActAgent oceanBaseReactAgent) {
+        return new AgentScopeLoopEngine(oceanBaseReactAgent);
     }
 }
